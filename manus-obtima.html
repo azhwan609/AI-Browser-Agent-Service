@@ -817,7 +817,7 @@ window.ShiwaUI.connect({
     }
     const task = (payload.text || '').trim();
     if (!task) {
-      return 'Enter a task to run the Sauce Demo browser flow.';
+      return 'Please enter a task for the agent.';
     }
     const response = await fetch('/execute', {
       method: 'POST',
@@ -826,16 +826,25 @@ window.ShiwaUI.connect({
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(result.detail || `Backend request failed (${response.status})`);
+      const friendlyErrors = {
+        422: 'I couldn’t complete that request safely or find the requested information. Try rephrasing your task.',
+        429: 'I’m busy right now. Please try again in a moment.',
+        502: 'I couldn’t finish that task. Please try again with a simpler request.',
+        503: 'The agent is temporarily unavailable. Please try again later.',
+        504: 'That page took too long to respond. Please try again.'
+      };
+      throw new Error(friendlyErrors[response.status] || 'Something went wrong while completing your task. Please try again.');
     }
     if (!result.success) {
-      throw new Error(result.message || 'Browser task did not complete successfully.');
+      throw new Error('I couldn’t finish that task. Please try again with a simpler request.');
     }
-    const parts = [result.message];
-    if (result.output) parts.push(result.output);
-    if (result.page_title) parts.push(`Page title: ${result.page_title}`);
-    if (result.current_url) parts.push(`URL: ${result.current_url}`);
-    return parts.join('\n\n');
+    // Keep Playwright's navigation/action trace and internal metadata out of chat.
+    // The backend output contains extracted user-requested content only.
+    const answer = (typeof result.output === 'string' ? result.output : '').trim();
+    if (answer) return answer;
+    const pageTitle = (typeof result.page_title === 'string' ? result.page_title : '').trim();
+    if (pageTitle) return pageTitle;
+    return 'The task finished, but I couldn’t find an answer on that page.';
   }
 });
 </script>

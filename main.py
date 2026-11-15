@@ -266,8 +266,6 @@ async def _execute_plan(plan: BrowserPlan) -> tuple[str, int, str, str]:
                         wait_until="domcontentloaded",
                         timeout=20_000,
                     )
-                    host = urlsplit(page.url).hostname or "public page"
-                    output_parts.append(f"Opened {host}.")
 
                 elif step.action == "click":
                     if RISKY_LINK_TEXT.search(target):
@@ -292,7 +290,6 @@ async def _execute_plan(plan: BrowserPlan) -> tuple[str, int, str, str]:
                     if not await _is_public_web_url(link["href"], host_cache):
                         raise ValueError("The link does not point to a public HTTP(S) destination.")
                     await locator.click(timeout=10_000)
-                    output_parts.append(f"Followed the link '{link['text'][:120]}'.")
 
                 elif step.action == "fill":
                     if not target or not value:
@@ -329,7 +326,6 @@ async def _execute_plan(plan: BrowserPlan) -> tuple[str, int, str, str]:
                     ):
                         raise ValueError("Only enabled, non-sensitive text/search/URL fields can be filled.")
                     await locator.fill(value, timeout=10_000)
-                    output_parts.append(f"Filled the '{target[:100]}' field; it was not submitted.")
 
                 elif step.action == "extract":
                     normalized = target.lower()
@@ -353,7 +349,8 @@ async def _execute_plan(plan: BrowserPlan) -> tuple[str, int, str, str]:
                         locator = page.get_by_text(target, exact=False)
                         text = await locator.first.inner_text(timeout=10_000)
                     text = text.strip()[:MAX_EXTRACT_CHARS]
-                    output_parts.append(text or "No visible text was found for that extraction step.")
+                    if text:
+                        output_parts.append(text)
 
                 completed += 1
 
@@ -424,7 +421,7 @@ async def execute(payload: ExecuteRequest) -> ExecuteResponse:
 
     return ExecuteResponse(
         success=True,
-        message=f"Completed {completed} browser action(s).",
+        message="Task completed.",
         task=payload.task,
         output=output,
         steps_completed=completed,
