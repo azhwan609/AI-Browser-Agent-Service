@@ -1,11 +1,14 @@
 # AI Browser Agent Service
 
-A small FastAPI service scaffold for a future browser-agent integration. The `POST /execute` endpoint currently returns a mock success response; it does not launch a browser or call an LLM yet.
+A FastAPI service that accepts a task and runs a browser login flow against the Sauce Demo sample site using Playwright. The current endpoint logs in with the configured standard demo account and returns the page title after login. The request's `task` is included in the response for traceability; it does not currently alter the fixed login flow.
 
 ## Run locally
 
 ```bash
 python -m pip install -r requirements.txt
+playwright install chromium
+export SAUCEDEMO_USERNAME=standard_user
+export SAUCEDEMO_PASSWORD=secret_sauce
 uvicorn main:app --reload
 ```
 
@@ -17,10 +20,4 @@ curl -X POST http://localhost:8000/execute \
   -d '{"task":"Test deployment"}'
 ```
 
-Expected response:
-
-```json
-{"success":true,"message":"Mock execution successful","task":"Test deployment"}
-```
-
-The endpoint's mock body in `main.py` is the intended integration point for an async Playwright/Groq task runner. No credentials or environment variables are required for the scaffold.
+The response includes `success`, `message`, `task`, and the browser-retrieved page `title`. Sauce Demo credentials are read from `SAUCEDEMO_USERNAME` and `SAUCEDEMO_PASSWORD`; configure them as environment variables rather than committing them to source. Render installs Chromium as part of the build using the command in `render.yaml`.

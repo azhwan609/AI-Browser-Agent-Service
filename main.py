@@ -1,7 +1,14 @@
-"""Minimal FastAPI service with a replaceable task-execution boundary."""
+"""FastAPI service that signs in to Sauce Demo using Playwright."""
 
-from fastapi import FastAPI
+import logging
+import os
+
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import async_playwright
+
+logger = logging.getLogger(__name__)
 
 
 class ExecuteRequest(BaseModel):
@@ -18,26 +25,57 @@ class ExecuteResponse(BaseModel):
     success: bool
     message: str
     task: str
+    title: str
 
 
 app = FastAPI(
     title="AI Browser Agent Service",
-    description="HTTP service scaffold for future browser-agent integrations.",
-    version="0.1.0",
+    description="FastAPI browser automation scaffold using Playwright.",
+    version="0.2.0",
 )
 
 
 @app.post("/execute", response_model=ExecuteResponse)
 async def execute(payload: ExecuteRequest) -> ExecuteResponse:
-    """Accept a task and return a mock result.
+    """Log in to Sauce Demo and return the page title after successful login."""
+    username = os.getenv("SAUCEDEMO_USERNAME")
+    password = os.getenv("SAUCEDEMO_PASSWORD")
+    if not username or not password:
+        raise HTTPException(
+            status_code=500,
+            detail="Sauce Demo credentials are not configured on the service",
+        )
 
-    Replace the mock below with an async execution function when integrating
-    Playwright/Groq. Keeping that logic behind this endpoint makes the HTTP
-    contract independent of the eventual agent implementation.
-    """
-    # TODO: call the future Playwright/Groq task runner here.
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                await page.goto(
+                    "https://www.saucedemo.com/",
+                    wait_until="domcontentloaded",
+                    timeout=30_000,
+                )
+                await page.locator("[data-test='username']").fill(username)
+                await page.locator("[data-test='password']").fill(password)
+                await page.locator("[data-test='login-button']").click()
+                await page.locator(".inventory_list").wait_for(
+                    state="visible",
+                    timeout=20_000,
+                )
+                title = await page.title()
+            finally:
+                await browser.close()
+    except PlaywrightError as exc:
+        logger.exception("Playwright failed while executing the Sauce Demo login flow")
+        raise HTTPException(
+            status_code=502,
+            detail="Browser automation failed while logging in to Sauce Demo",
+        ) from exc
+
     return ExecuteResponse(
         success=True,
-        message="Mock execution successful",
+        message="Login successful",
         task=payload.task,
+        title=title,
     )
