@@ -557,6 +557,23 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
   .chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 6px 8px}
   .chips[hidden]{display:none}
   .chip{padding:5px 10px;border-radius:999px;font-size:12px;color:#eee6d3;cursor:pointer;background:rgba(var(--glow),.16);border:1px solid rgba(var(--glow),.3)}
+  /* Compact bottom composer and spacious, readable agent response cards. */
+  main#chat{scroll-behavior:smooth;overscroll-behavior:contain;padding:14px clamp(12px,4vw,30px) 20px}
+  .msg.user{width:fit-content;max-width:min(80%,560px);overflow-wrap:anywhere}
+  .msg.assistant{position:relative;align-self:flex-start;box-sizing:border-box;width:min(100%,800px);max-width:min(100%,800px);min-width:0;padding:40px 20px 18px;border-radius:22px;border:1px solid rgba(var(--glow),.38);background:radial-gradient(ellipse at 92% 0%,rgba(var(--glow),.16),transparent 40%),linear-gradient(145deg,rgba(18,23,31,.97),rgba(8,11,17,.96));box-shadow:0 16px 42px rgba(0,0,0,.46),0 0 24px rgba(var(--glow),.09),0 1px 0 rgba(255,255,255,.1) inset;color:#f4efe3;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+  .msg.assistant::before{content:"AGENT RESPONSE";position:absolute;top:14px;left:20px;font-size:10px;font-weight:700;letter-spacing:.16em;color:rgb(var(--glow));opacity:.9}
+  .msg.assistant.pending{display:flex;align-items:center;min-height:82px;animation:agentCardGlow 1.8s ease-in-out infinite}
+  .msg.assistant.pending::before{content:"AGENT WORKING"}
+  .msg.assistant.pending::after{content:"";position:absolute;top:15px;right:20px;width:9px;height:9px;border-radius:50%;background:rgb(var(--glow));box-shadow:0 0 14px rgba(var(--glow),.9);animation:agentDotPulse 1.1s ease-in-out infinite}
+  .msg.assistant.error{border-color:rgba(229,100,92,.65);background:linear-gradient(145deg,rgba(52,23,25,.96),rgba(18,12,15,.96))}
+  .msg.assistant.error::before{content:"NEEDS ATTENTION";color:#ffaaa4}
+  .composer-wrap{position:sticky;bottom:0;z-index:10;flex:0 0 auto;padding:7px 10px calc(7px + env(safe-area-inset-bottom,0px));border-top:1px solid rgba(var(--glow),.22);background:linear-gradient(180deg,rgba(7,9,14,.18),rgba(7,9,14,.78))}
+  .composer{width:min(100%,680px);max-width:680px;padding:9px 12px 8px;border-radius:22px}
+  textarea{min-height:62px;max-height:132px;font-size:17px;line-height:1.45;padding:11px 8px;overflow-y:auto}
+  @keyframes agentCardGlow{0%,100%{border-color:rgba(var(--glow),.28);box-shadow:0 16px 42px rgba(0,0,0,.42),0 0 14px rgba(var(--glow),.06)}50%{border-color:rgba(var(--glow),.62);box-shadow:0 16px 42px rgba(0,0,0,.42),0 0 30px rgba(var(--glow),.2)}}
+  @keyframes agentDotPulse{0%,100%{opacity:.45;transform:scale(.82)}50%{opacity:1;transform:scale(1)}}
+  @media(max-width:600px){main#chat{padding:12px 10px 16px;gap:10px}.msg.assistant{width:100%;max-width:100%;padding:38px 15px 16px;border-radius:18px;font-size:14px}.msg.user{max-width:88%}.composer-wrap{padding:6px 8px calc(7px + env(safe-area-inset-bottom,0px))}.composer{width:100%;max-width:100%;padding:8px 9px 7px;border-radius:18px}textarea{min-height:56px;max-height:108px;padding:9px 7px;font-size:16px}.row{gap:5px}}
+  @media(prefers-reduced-motion:reduce){.msg.assistant.pending,.msg.assistant.pending::after{animation:none}}
 </style>
 </head>
 <body>
@@ -718,7 +735,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     addMessage('user',text||('\ud83d\udcce '+payload.files.length+' file(s)'));
     ta.value='';state.files=[];renderChips();
     emit('send',payload);setBusy(true);
-    var out=addMessage('assistant','\u2026');out.classList.add('pending');
+    var out=addMessage('assistant','Agent is working through your request…');out.classList.add('pending');
     var ctx={message:out,stream:function(t){if(out.classList.contains('pending')){out.textContent='';out.classList.remove('pending')}out.textContent+=t;chat.scrollTop=chat.scrollHeight}};
     try{
       var res=adapter?await adapter.send(payload,ctx):'Backend not connected yet. Call ShiwaUI.connect({send}) to attach a model.';
