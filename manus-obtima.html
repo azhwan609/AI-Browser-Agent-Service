@@ -776,7 +776,11 @@ window.ShiwaUI.connect({
     if (!result.success) {
       throw new Error(result.message || 'Browser task did not complete successfully.');
     }
-    return `${result.message}. Sauce Demo page title: ${result.title}`;
+    const parts = [result.message];
+    if (result.output) parts.push(result.output);
+    if (result.page_title) parts.push(`Page title: ${result.page_title}`);
+    if (result.current_url) parts.push(`URL: ${result.current_url}`);
+    return parts.join('\n\n');
   }
 });
 </script>
