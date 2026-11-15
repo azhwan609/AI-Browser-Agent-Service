@@ -3,6 +3,9 @@
 import logging
 import os
 
+# Match the package-local browser location used by the Render build command.
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from playwright.async_api import Error as PlaywrightError
@@ -31,7 +34,7 @@ class ExecuteResponse(BaseModel):
 app = FastAPI(
     title="AI Browser Agent Service",
     description="FastAPI browser automation scaffold using Playwright.",
-    version="0.2.0",
+    version="0.2.1",
 )
 
 
