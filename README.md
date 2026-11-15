@@ -1,6 +1,12 @@
 # AI Browser Agent Service
 
-A FastAPI service that accepts a task and runs a browser login flow against the Sauce Demo sample site using Playwright. The current endpoint logs in with the configured standard demo account and returns the page title after login. The request's `task` is included in the response for traceability; it does not currently alter the fixed login flow.
+A FastAPI service with a single-page chat-style frontend and a Playwright flow for the Sauce Demo sample site.
+
+- `GET /` serves `manus-obtima.html`.
+- `POST /execute` accepts `{"task":"..."}`, logs in to Sauce Demo using the credentials stored in Render environment variables, and returns the page title.
+- The frontend sends text tasks to `/execute` and displays the backend result. File uploads are not yet supported by the backend.
+
+The current browser flow is fixed to the Sauce Demo login; the submitted task is retained in the response for traceability and does not change the flow.
 
 ## Run locally
 
@@ -20,4 +26,4 @@ curl -X POST http://localhost:8000/execute \
   -d '{"task":"Test deployment"}'
 ```
 
-The response includes `success`, `message`, `task`, and the browser-retrieved page `title`. Sauce Demo credentials are read from `SAUCEDEMO_USERNAME` and `SAUCEDEMO_PASSWORD`; configure them as environment variables rather than committing them to source. Render installs Chromium into Playwright's package-local browser directory during the build, and the app uses the same path at runtime.
+Sauce Demo credentials are read from `SAUCEDEMO_USERNAME` and `SAUCEDEMO_PASSWORD`; configure them as environment variables rather than committing them to source. Render installs Chromium into Playwright's package-local browser directory during the build, and the app uses the same path at runtime.

@@ -1,17 +1,20 @@
-"""FastAPI service that signs in to Sauce Demo using Playwright."""
+"""FastAPI service with a single-page frontend and Sauce Demo browser flow."""
 
 import logging
 import os
+from pathlib import Path
 
 # Match the package-local browser location used by the Render build command.
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
 logger = logging.getLogger(__name__)
+FRONTEND_FILE = Path(__file__).with_name("manus-obtima.html")
 
 
 class ExecuteRequest(BaseModel):
@@ -33,9 +36,17 @@ class ExecuteResponse(BaseModel):
 
 app = FastAPI(
     title="AI Browser Agent Service",
-    description="FastAPI browser automation scaffold using Playwright.",
-    version="0.2.1",
+    description="Single-page frontend and Playwright Sauce Demo automation.",
+    version="0.3.0",
 )
+
+
+@app.get("/", include_in_schema=False)
+async def serve_frontend() -> FileResponse:
+    """Serve the bundled chat UI from the repository root."""
+    if not FRONTEND_FILE.is_file():
+        raise HTTPException(status_code=404, detail="Frontend file not found")
+    return FileResponse(FRONTEND_FILE, media_type="text/html; charset=utf-8")
 
 
 @app.post("/execute", response_model=ExecuteResponse)
