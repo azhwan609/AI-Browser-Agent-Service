@@ -40,4 +40,4 @@ The browser runs on the service, not in the user's local browser, and each execu
 
 ## Render deployment
 
-Render uses the repository's Dockerfile because Playwright Chromium needs OS-level packages. The image installs Chromium dependencies and Xvfb, then starts `uvicorn main:app` on Render's `PORT` (default 10000). The Blueprint health check uses `/version`, and `autoDeployTrigger: commit` deploys commits to `main`.
+Render uses the versioned official Playwright Python image `mcr.microsoft.com/playwright/python:v1.63.0-noble`. It provides Chromium and the browser's Linux dependencies. `requirements.txt` pins the Python Playwright package to the same `1.63.0` release, and the browser path is `/ms-playwright`; the Dockerfile does not rerun `playwright install --with-deps`. The service starts `uvicorn main:app` on Render's `PORT` (default 10000). The Blueprint health check uses `/version`, and `autoDeployTrigger: commit` deploys commits to `main`.

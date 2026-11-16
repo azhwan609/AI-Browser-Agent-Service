@@ -10,4 +10,4 @@ services:
     healthCheckPath: /version
     envVars:
       - key: PLAYWRIGHT_BROWSERS_PATH
-        value: "0"
+        value: /ms-playwright
