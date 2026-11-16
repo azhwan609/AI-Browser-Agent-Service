@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from groq import Groq
 from pydantic import BaseModel, ConfigDict, Field
 from pyvirtualdisplay import Display
@@ -29,6 +29,7 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 6
 MAX_EXTRACT_CHARS = 4_000
+VERSION_TAG = "V2.0 - Chat Routing Active"
 BROWSER_ACTION_RE = re.compile(
     r"\b(?:go\s+to|navigate(?:\s+to)?|visit|browse(?:\s+to)?|click|fill|"
     r"type\s+(?:into|in)|enter\s+(?:into|in)|submit|extract|scrape|"
@@ -173,6 +174,12 @@ app = FastAPI(
     description="Single-page frontend with a constrained Groq and Playwright agent.",
     version="0.4.0",
 )
+
+
+@app.get("/execute", response_class=PlainTextResponse)
+async def execute_version() -> PlainTextResponse:
+    """Return a deployment fingerprint without invoking Groq or Playwright."""
+    return PlainTextResponse(VERSION_TAG)
 
 
 @app.get("/", include_in_schema=False)

@@ -20,6 +20,13 @@ class LiveStreamTests(unittest.TestCase):
         self.key.start()
         self.addCleanup(self.key.stop)
 
+    def test_execute_get_returns_version_tag(self):
+        response = self.client.get("/execute")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "V2.0 - Chat Routing Active")
+        self.assertTrue(response.headers["content-type"].startswith("text/plain"))
+
     def test_sse_event_format(self):
         event = main._sse_event("status", {"message": "Started"})
         self.assertTrue(event.startswith("event: status\ndata: "))
@@ -91,9 +98,11 @@ class LiveStreamTests(unittest.TestCase):
     def test_operational_gate_only_routes_web_tasks_to_browser_planner(self):
         self.assertFalse(main._requires_browser("Hello, how are you?"))
         self.assertFalse(main._requires_browser("What is the capital of France?"))
+        self.assertFalse(main._requires_browser("Hello, who are you?"))
         self.assertTrue(
             main._requires_browser("Go to wikipedia.org and give me the main heading (h1) of the page.")
         )
+        self.assertTrue(main._requires_browser("Go to google.com and tell me the title"))
         self.assertTrue(main._requires_browser("Get the page title from https://example.org"))
 
     def test_system_prompt_maps_title_text_and_h1_to_extraction_actions(self):
