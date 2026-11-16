@@ -1,10 +1,12 @@
 import asyncio
 import base64
 import os
+import socket
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 import main
 
@@ -28,6 +30,13 @@ class LiveStreamTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.text, "V2.0 - Chat Routing Active")
                 self.assertTrue(response.headers["content-type"].startswith("text/plain"))
+
+    def test_root_serves_the_frontend_adapter(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers["content-type"].startswith("text/html"))
+        self.assertIn("AI_BROWSER_AGENT_BACKEND_ADAPTER", response.text)
 
     def test_sse_event_format(self):
         event = main._sse_event("status", {"message": "Started"})
@@ -55,10 +64,29 @@ class LiveStreamTests(unittest.TestCase):
         self.assertIn("event: status", response.text)
         self.assertIn('"message": "Page is loading"', response.text)
         self.assertIn("event: frame", response.text)
+        self.assertIn('"browser_task": true', response.text)
         self.assertIn(f"data:image/jpeg;base64,{latest_frame}", response.text)
         self.assertNotIn(f"data:image/jpeg;base64,{stale_frame}", response.text)
         self.assertIn("event: complete", response.text)
         self.assertIn('"output": "Example Domain"', response.text)
+
+    def test_stream_preserves_frame_and_status_order(self):
+        frame = base64.b64encode(b"ordered frame").decode("ascii")
+
+        async def fake_execute(plan, frame_callback=None, progress_callback=None):
+            await frame_callback(frame)
+            await progress_callback({"message": "Status after frame"})
+            return "Done", 1, "Example Domain", "https://example.com/"
+
+        with patch.object(main, "_generate_plan_sync", return_value=self.plan), patch.object(
+            main, "_execute_plan", side_effect=fake_execute
+        ):
+            response = self.client.post("/execute/stream", json={"task": "Read example.com"})
+
+        self.assertEqual(response.status_code, 200)
+        frame_position = response.text.index(f"data:image/jpeg;base64,{frame}")
+        status_position = response.text.index('"message": "Status after frame"')
+        self.assertLess(frame_position, status_position)
 
     def test_stream_exposes_playwright_error_message(self):
         async def fail_execute(plan, frame_callback=None, progress_callback=None):
@@ -114,6 +142,56 @@ class LiveStreamTests(unittest.TestCase):
         self.assertTrue(main._requires_browser("Go to google.com and tell me the title"))
         self.assertTrue(main._requires_browser("Get the page title from https://example.org"))
 
+    def test_persian_browser_intents_are_routed_without_misclassifying_chat(self):
+        self.assertTrue(main._requires_browser("برو به example.com و عنوان صفحه را بگو"))
+        self.assertTrue(main._requires_browser("در گوگل جستجو کن"))
+        self.assertTrue(main._requires_browser("برو به ویکی‌پدیا و عنوان اصلی را بگو"))
+        self.assertFalse(main._requires_browser("سلام، حالت چطوره؟"))
+        self.assertFalse(main._requires_browser("ویکی‌پدیا چیست؟"))
+
+    def test_persian_chat_stream_skips_browser_planner(self):
+        with patch.object(main, "_generate_chat_sync", return_value="خوبم، ممنون!") as chat_reply, patch.object(
+            main, "_generate_plan_sync"
+        ) as planner, patch.object(main, "_execute_plan", new=AsyncMock()) as browser_execute:
+            response = self.client.post("/execute/stream", json={"task": "سلام، حالت چطوره؟"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("خوبم، ممنون!", response.text)
+        self.assertIn('"browser_task": false', response.text)
+        chat_reply.assert_called_once()
+        planner.assert_not_called()
+        browser_execute.assert_not_awaited()
+
+    def test_public_destination_validation_rechecks_dns_each_time(self):
+        def record(address):
+            return (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, 443))
+
+        public_answer = [record("8.8.8.8")]
+        private_answer = [record("10.0.0.8")]
+        with patch("egress_proxy.socket.getaddrinfo", side_effect=[public_answer, private_answer]):
+            self.assertTrue(asyncio.run(main._is_public_web_url("https://changing.example")))
+            self.assertFalse(asyncio.run(main._is_public_web_url("https://changing.example")))
+        self.assertFalse(asyncio.run(main._is_public_web_url("http://127.0.0.1/")))
+
+    def test_page_title_and_h1_extraction_call_the_requested_dom_target(self):
+        page = unittest.mock.Mock()
+        page.title = AsyncMock(return_value="Artificial Intelligence")
+        heading = unittest.mock.Mock()
+        heading.evaluate_all = AsyncMock(return_value="Artificial intelligence")
+        page.locator.return_value = heading
+
+        title = asyncio.run(main._extract_page_content(page, "page title"))
+        h1 = asyncio.run(main._extract_page_content(page, "css:h1"))
+
+        self.assertEqual(title, "Artificial Intelligence")
+        self.assertEqual(h1, "Artificial intelligence")
+        page.locator.assert_called_with("h1")
+
+    def test_browser_plan_rejects_more_than_six_steps(self):
+        action = main.BrowserAction(action="navigate", target="https://example.com", value="")
+        with self.assertRaises(ValidationError):
+            main.BrowserPlan(goal="too many steps", steps=[action] * 7)
+
     def test_system_prompt_maps_title_text_and_h1_to_extraction_actions(self):
         self.assertIn("target 'page title' (read page.title()", main.SYSTEM_PROMPT)
         self.assertIn("target 'css:h1'", main.SYSTEM_PROMPT)
@@ -150,6 +228,35 @@ class LiveStreamTests(unittest.TestCase):
         fake_display.start.assert_called_once()
         fake_display.stop.assert_called_once()
         self.assertFalse(browser_run.await_args.kwargs["headless"])
+
+    def test_browser_context_uses_connection_filtering_proxy(self):
+        page = unittest.mock.Mock()
+        page.set_default_timeout = unittest.mock.Mock()
+        page.title = AsyncMock(return_value="Example Domain")
+        page.url = "https://example.com/"
+        context = unittest.mock.Mock()
+        context.route = AsyncMock()
+        context.new_page = AsyncMock(return_value=page)
+        browser = unittest.mock.Mock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.close = AsyncMock()
+        playwright = unittest.mock.Mock()
+        playwright.chromium.launch = AsyncMock(return_value=browser)
+
+        class PlaywrightManager:
+            async def __aenter__(self):
+                return playwright
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return None
+
+        plan = main.BrowserPlan(goal="No-op proxy check", steps=[])
+        with patch.object(main, "async_playwright", return_value=PlaywrightManager()):
+            result = asyncio.run(main._execute_plan_browser(plan, headless=True))
+
+        self.assertEqual(result[2], "Example Domain")
+        proxy = browser.new_context.await_args.kwargs["proxy"]
+        self.assertRegex(proxy["server"], r"^http://127\.0\.0\.1:\d+$")
 
     def test_disconnect_does_not_strand_browser_semaphore(self):
         async def fake_execute(plan, frame_callback=None, progress_callback=None):

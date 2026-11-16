@@ -769,6 +769,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     var text=ta.value.trim();
     if((!text&&!state.files.length)||state.busy)return;
     var payload={text:text,files:state.files.slice(),mode:Object.assign({},state.mode),durationMin:state.durationMin,device:state.device,agent:state.agent,tool:state.tool};
+    if(payload.files.length&&adapter&&adapter.supportsAttachments===false){var warning=addMessage('assistant','File attachments are not supported by this backend yet. Remove the attachment to send your text.');finalizeAssistant(warning,true);return}
     addMessage('user',text||('\ud83d\udcce '+payload.files.length+' file(s)'));
     ta.value='';state.files=[];renderChips();
     emit('send',payload);setBusy(true);
@@ -828,6 +829,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
   document.body.appendChild(panel);
   const status=panel.querySelector('.live-browser-status');
   const badge=panel.querySelector('.live-browser-badge');
+  let terminalEventReceived=false;
   panel.querySelector('.live-browser-close').addEventListener('click',()=>{panel.hidden=true});
   function showPanel(){
     panel.hidden=false;panel.classList.remove('done','failed','has-frame');badge.textContent='LIVE';
@@ -837,14 +839,19 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     status.textContent='Connecting to the agent…';
   }
   function onEvent(name,data){
-    if(name==='status') status.textContent=String(data.message||'Working…');
+    if(name==='status'){
+      if(typeof data.browser_task==='boolean'){
+        if(data.browser_task)showPanel();else panel.hidden=true;
+      }
+      if(!panel.hidden)status.textContent=String(data.message||'Working…');
+    }
     else if(name==='frame'){
       if(typeof data.image!=='string'||!data.image.startsWith('data:image/jpeg;base64,'))return;
       let img=panel.querySelector('img.live-browser-frame');
       if(!img){img=document.createElement('img');img.className='live-browser-frame';img.alt='Live screenshot of the Playwright browser';panel.querySelector('.live-browser-empty')?.replaceWith(img)}
       img.onload=()=>panel.classList.add('has-frame');img.src=data.image;
-    } else if(name==='complete'){window.__liveBrowserResult=data;panel.classList.add('done');badge.textContent='DONE';status.textContent='Task complete';}
-    else if(name==='error'){panel.classList.add('failed');badge.textContent='ATTENTION';throw new Error(String(data.message||'The browser task failed.'));}
+    } else if(name==='complete'){terminalEventReceived=true;window.__liveBrowserResult=data;panel.classList.add('done');badge.textContent='DONE';status.textContent='Task complete';}
+    else if(name==='error'){terminalEventReceived=true;panel.classList.add('failed');badge.textContent='ATTENTION';throw new Error(String(data.message||'The browser task failed.'));}
   }
   function parseEvent(raw){
     if(!raw||raw.startsWith(':'))return;
@@ -865,12 +872,14 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
       let boundary;while((boundary=buffer.search(/\r?\n\r?\n/))!==-1){const eventText=buffer.slice(0,boundary);const separator=buffer.slice(boundary).match(/^\r?\n\r?\n/)[0];buffer=buffer.slice(boundary+separator.length);parseEvent(eventText)}
     }
     buffer+=decoder.decode();if(buffer.trim())parseEvent(buffer);
+    if(!terminalEventReceived)throw new Error('The stream ended before the agent sent a final result. Please retry the task.');
   }
   window.ShiwaUI.connect({
+    supportsAttachments:false,
     async send(payload){
       if(payload.files&&payload.files.length)throw new Error('File attachments are not supported by this backend yet.');
       const task=(payload.text||'').trim();if(!task)return 'Please enter a task for the agent.';
-      showPanel();window.__liveBrowserResult=null;
+      terminalEventReceived=false;window.__liveBrowserResult=null;
       try{
         // This app uses same-origin HTTP streaming (SSE), not WebSockets. URL resolution
         // follows the current host and automatically uses HTTPS when the page is HTTPS.

@@ -2,12 +2,11 @@
 
 import asyncio
 import base64
-import ipaddress
 import json
 import logging
 import os
 import re
-import socket
+from collections import deque
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -22,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pyvirtualdisplay import Display
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
+from egress_proxy import PublicEgressProxy, resolve_public_addresses
 
 logger = logging.getLogger(__name__)
 FRONTEND_FILE = Path(__file__).with_name("manus-obtima.html")
@@ -51,6 +51,15 @@ PAGE_EXTRACTION_RE = re.compile(
     r"\b(?:title|heading|h1|h2|paragraph|page\s+text|page\s+content|webpage\s+text|extract|read|get\s+text)\b",
     re.IGNORECASE,
 )
+PERSIAN_SITE_RE = re.compile(r"(?:ویکی(?:پدیا|[‌\s]+پدیا)|گوگل|گیت(?:هاب|‌هاب)|یوتیوب|ردیت|آمازون)")
+PERSIAN_OPERATION_RE = re.compile(
+    r"(?:برو(?:\s+به)?|باز\s*کن|وارد\s*شو|کلیک\s*کن|پر\s*کن|وارد\s*کن|"
+    r"جست(?:‌|\s)?(?:وجو|جو)\s*کن|سرچ\s*کن|بگرد(?:\s+در)?|استخراج\s*کن|بخوان)"
+)
+PERSIAN_EXTRACTION_RE = re.compile(
+    r"(?:عنوان|تیتر|سرعنوان|سرتیتر|هدینگ|h1|h2|متن(?:\s+صفحه)?|پاراگراف|محتوا|استخراج|بخوان)",
+    re.IGNORECASE,
+)
 
 
 def _requires_browser(task: str) -> bool:
@@ -59,6 +68,10 @@ def _requires_browser(task: str) -> bool:
         BROWSER_ACTION_RE.search(task)
         or OPEN_SITE_RE.search(task)
         or (SITE_REFERENCE_RE.search(task) and PAGE_EXTRACTION_RE.search(task))
+        or (
+            (SITE_REFERENCE_RE.search(task) or PERSIAN_SITE_RE.search(task))
+            and (PERSIAN_OPERATION_RE.search(task) or PERSIAN_EXTRACTION_RE.search(task))
+        )
     )
 
 
@@ -144,11 +157,16 @@ on a webpage. The only allowed actions are:
 - extract: target is 'page title', 'page text', 'url', visible text, or
   'css:<selector>'; value is empty. Map a request for the document/page title to
   target 'page title' (read page.title(), never substitute the URL). Map a
-  request for the main heading or H1 to target 'css:h1'. Map a request for page
-  text or visible page text to 'page text'; for a named element use a specific
-  CSS selector such as 'css:main' or 'css:p'. Use target 'url' only when the user
-  explicitly asks for the URL. Include the extract action after navigation or
-  search; do not return a navigation URL as a substitute for requested content.
+ request for the main heading or H1 to target 'css:h1'. Map a request for page
+ text or visible page text to 'page text'; for a named element use a specific
+ CSS selector such as 'css:main' or 'css:p'. Use target 'url' only when the user
+ explicitly asks for the URL. Include the extract action after navigation or
+ search; do not return a navigation URL as a substitute for requested content.
+For Persian requests, map equivalents such as 'عنوان صفحه' to 'page title',
+'عنوان اصلی/H1' to 'css:h1', and 'متن صفحه' to 'page text'.
+
+The user may describe an explicit browser task in Persian; recognize equivalent
+Persian actions while preserving the same destination and safety rules.
 
 Use no more than 6 steps. Do not access private/local networks, perform
 purchases/payments, book, delete, send, or change account settings unless the
@@ -242,10 +260,7 @@ def _generate_chat_sync(task: str, api_key: str, model: str) -> str:
         client.close()
 
 
-async def _is_public_web_url(
-    url: str,
-    cache: dict[tuple[str, int], bool],
-) -> bool:
+async def _is_public_web_url(url: str) -> bool:
     """Allow only public HTTP(S) hosts and reject private or special-use IPs."""
     try:
         parsed = urlsplit(url)
@@ -269,32 +284,7 @@ async def _is_public_web_url(
     if port is not None and port != expected_port:
         return False
     port = port or expected_port
-    cache_key = (hostname, port)
-    if cache_key in cache:
-        return cache[cache_key]
-
-    try:
-        address = ipaddress.ip_address(hostname)
-        is_public = address.is_global
-    except ValueError:
-        try:
-            records = await asyncio.to_thread(
-                socket.getaddrinfo,
-                hostname,
-                port,
-                0,
-                socket.SOCK_STREAM,
-            )
-            addresses = {
-                ipaddress.ip_address(record[4][0].split("%", 1)[0])
-                for record in records
-            }
-            is_public = bool(addresses) and all(item.is_global for item in addresses)
-        except (OSError, ValueError):
-            is_public = False
-
-    cache[cache_key] = is_public
-    return is_public
+    return bool(await resolve_public_addresses(hostname, port))
 
 
 async def _execute_plan(
@@ -346,10 +336,28 @@ async def _execute_plan_browser(
     frame_callback=None,
     progress_callback=None,
 ) -> tuple[str, int, str, str]:
+    """Run Playwright behind a local proxy that pins validated public IPs."""
+    async with PublicEgressProxy() as proxy:
+        return await _execute_plan_browser_with_proxy(
+            plan,
+            proxy=proxy,
+            headless=headless,
+            frame_callback=frame_callback,
+            progress_callback=progress_callback,
+        )
+
+
+async def _execute_plan_browser_with_proxy(
+    plan: BrowserPlan,
+    *,
+    proxy: PublicEgressProxy,
+    headless: bool,
+    frame_callback=None,
+    progress_callback=None,
+) -> tuple[str, int, str, str]:
     """Execute the fixed action vocabulary in a fresh, anonymous browser context."""
     output_parts: list[str] = []
     completed = 0
-    host_cache: dict[tuple[str, int], bool] = {}
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=headless)
@@ -359,11 +367,12 @@ async def _execute_plan_browser(
                 accept_downloads=False,
                 service_workers="block",
                 viewport={"width": 1280, "height": 800},
+                proxy={"server": proxy.url},
             )
 
             async def guard_request(route) -> None:
                 try:
-                    allowed = await _is_public_web_url(route.request.url, host_cache)
+                    allowed = urlsplit(route.request.url).scheme.lower() in {"http", "https"}
                     if allowed:
                         await route.continue_()
                     else:
@@ -394,7 +403,7 @@ async def _execute_plan_browser(
                     })
 
                 if step.action == "navigate":
-                    if not await _is_public_web_url(target, host_cache):
+                    if not await _is_public_web_url(target):
                         raise ValueError("Navigation is limited to public HTTP(S) URLs.")
                     await page.goto(
                         target,
@@ -433,9 +442,7 @@ async def _execute_plan_browser(
                     )
                     if not control:
                         raise ValueError("Only visible links and standard form controls can be clicked.")
-                    if control["kind"] == "link" and not await _is_public_web_url(
-                        control["href"], host_cache
-                    ):
+                    if control["kind"] == "link" and not await _is_public_web_url(control["href"]):
                         raise ValueError("The link does not point to a public HTTP(S) destination.")
                     if control.get("disabled"):
                         raise ValueError("Disabled form controls cannot be clicked.")
@@ -476,26 +483,7 @@ async def _execute_plan_browser(
                     await locator.fill(value, timeout=10_000)
 
                 elif step.action == "extract":
-                    normalized = target.lower()
-                    if normalized in {"title", "page title"}:
-                        text = await page.title()
-                    elif normalized in {"url", "current url"}:
-                        text = page.url
-                    elif normalized in {"body", "page text", "visible page text"}:
-                        text = await page.locator("body").evaluate(
-                            "element => (element.innerText || '').slice(0, 4000)"
-                        )
-                    elif normalized.startswith("css:"):
-                        selector = target[4:].strip()
-                        if not selector or len(selector) > 300:
-                            raise ValueError("The CSS selector is empty or too long.")
-                        locator = page.locator(selector)
-                        text = await locator.evaluate_all(
-                            "(elements) => elements.slice(0, 10).map(element => element.innerText || '').join('\\n')"
-                        )
-                    else:
-                        locator = page.get_by_text(target, exact=False)
-                        text = await locator.first.inner_text(timeout=10_000)
+                    text = await _extract_page_content(page, target)
                     text = text.strip()[:MAX_EXTRACT_CHARS]
                     if text:
                         output_parts.append(text)
@@ -513,6 +501,29 @@ async def _execute_plan_browser(
                 except asyncio.CancelledError:
                     pass
             await browser.close()
+
+
+async def _extract_page_content(page, target: str) -> str:
+    """Extract only requested page text, title, URL, or bounded CSS text."""
+    normalized = target.lower().strip()
+    if normalized in {"title", "page title"}:
+        return await page.title()
+    if normalized in {"url", "current url"}:
+        return page.url
+    if normalized in {"body", "page text", "visible page text"}:
+        return await page.locator("body").evaluate(
+            "element => (element.innerText || '').slice(0, 4000)"
+        )
+    if normalized.startswith("css:"):
+        selector = target[4:].strip()
+        if not selector or len(selector) > 300:
+            raise ValueError("The CSS selector is empty or too long.")
+        locator = page.locator(selector)
+        return await locator.evaluate_all(
+            "(elements) => elements.slice(0, 10).map(element => element.innerText || '').join('\\n')"
+        )
+    locator = page.get_by_text(target, exact=False)
+    return await locator.first.inner_text(timeout=10_000)
 
 
 @app.post("/execute", response_model=ExecuteResponse)
@@ -613,10 +624,10 @@ async def _execute_stream_events(payload: ExecuteRequest):
     """Stream status and screenshots before sending the final result."""
     browser_task = _requires_browser(payload.task)
     status = "Planning your browser task…" if browser_task else "Writing a reply…"
-    yield _sse_event("status", {"message": status})
+    yield _sse_event("status", {"message": status, "browser_task": browser_task})
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        yield _sse_event("error", {"message": "The browser agent is not configured."})
+        yield _sse_event("error", {"message": "The agent is not configured."})
         return
     model = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL).strip()
 
@@ -666,17 +677,19 @@ async def _execute_stream_events(payload: ExecuteRequest):
         yield _sse_event("error", {"message": plan.goal or "No safe browser actions were proposed."})
         return
 
-    events: asyncio.Queue[tuple[str, dict]] = asyncio.Queue()
-    latest_frame: dict | None = None
+    pending_events: deque[tuple[int, str, dict]] = deque()
+    latest_frame: tuple[int, dict] | None = None
+    event_sequence = 0
     events_ready = asyncio.Event()
 
     def publish(name: str, data: dict) -> None:
-        """Preserve all progress while coalescing superseded preview frames."""
-        nonlocal latest_frame
+        """Preserve event order and progress while coalescing superseded frames."""
+        nonlocal latest_frame, event_sequence
+        event_sequence += 1
         if name == "frame":
-            latest_frame = data
+            latest_frame = (event_sequence, data)
         else:
-            events.put_nowait((name, data))
+            pending_events.append((event_sequence, name, data))
         events_ready.set()
 
     async def frame_callback(encoded: str) -> None:
@@ -718,16 +731,24 @@ async def _execute_stream_events(payload: ExecuteRequest):
     try:
         yield _sse_event("status", {"message": "Launching browser and connecting live preview…"})
         while True:
-            if not events.empty():
-                name, data = events.get_nowait()
+            if pending_events and latest_frame is not None:
+                if pending_events[0][0] <= latest_frame[0]:
+                    _, name, data = pending_events.popleft()
+                else:
+                    _, data = latest_frame
+                    latest_frame = None
+                    name = "frame"
+            elif pending_events:
+                _, name, data = pending_events.popleft()
             elif latest_frame is not None:
-                name, data = "frame", latest_frame
+                _, data = latest_frame
                 latest_frame = None
+                name = "frame"
             elif worker.done():
                 break
             else:
                 events_ready.clear()
-                if not events.empty() or latest_frame is not None or worker.done():
+                if pending_events or latest_frame is not None or worker.done():
                     continue
                 await events_ready.wait()
                 continue
