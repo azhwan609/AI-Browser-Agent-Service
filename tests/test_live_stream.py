@@ -345,6 +345,59 @@ class LiveStreamTests(unittest.TestCase):
         proxy = browser.new_context.await_args.kwargs["proxy"]
         self.assertRegex(proxy["server"], r"^http://127\.0\.0\.1:\d+$")
 
+    def test_live_frame_is_captured_after_navigation(self):
+        events = []
+        page = unittest.mock.Mock()
+        page.set_default_timeout = unittest.mock.Mock()
+
+        async def navigate(*args, **kwargs):
+            events.append("navigate")
+
+        async def screenshot(**kwargs):
+            events.append("screenshot")
+            return b"jpeg-frame"
+
+        async def record_frame(encoded):
+            events.append("frame")
+
+        page.goto = AsyncMock(side_effect=navigate)
+        page.screenshot = AsyncMock(side_effect=screenshot)
+        page.title = AsyncMock(return_value="Example Domain")
+        page.url = "https://example.com/"
+        context = unittest.mock.Mock()
+        context.route = AsyncMock()
+        context.new_page = AsyncMock(return_value=page)
+        browser = unittest.mock.Mock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.close = AsyncMock()
+        playwright = unittest.mock.Mock()
+        playwright.chromium.launch = AsyncMock(return_value=browser)
+
+        class PlaywrightManager:
+            async def __aenter__(self):
+                return playwright
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return None
+
+        plan = main.BrowserPlan(
+            goal="Open Example Domain",
+            steps=[main.BrowserAction(action="navigate", target="https://example.com/", value="")],
+        )
+        with patch.object(main, "_is_public_web_url", new=AsyncMock(return_value=True)), patch.object(
+            main, "_capture_frames", new=AsyncMock()
+        ), patch.object(main, "async_playwright", return_value=PlaywrightManager()):
+            asyncio.run(
+                main._execute_plan_browser_with_proxy(
+                    plan,
+                    proxy=unittest.mock.Mock(url="http://127.0.0.1:12345"),
+                    headless=True,
+                    frame_callback=record_frame,
+                )
+            )
+
+        self.assertEqual(events, ["navigate", "screenshot", "frame"])
+
     def test_disconnect_does_not_strand_browser_semaphore(self):
         async def fake_execute(plan, frame_callback=None, progress_callback=None):
             await asyncio.sleep(0.05)

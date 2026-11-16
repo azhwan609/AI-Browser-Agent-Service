@@ -355,17 +355,23 @@ async def _execute_plan(
             await asyncio.to_thread(display.stop)
 
 
-async def _capture_frames(page, frame_callback) -> None:
+async def _capture_frame(page, frame_callback, capture_lock: asyncio.Lock) -> None:
+    """Capture one JPEG frame without overlapping another screenshot call."""
+    try:
+        async with capture_lock:
+            image = await page.screenshot(type="jpeg", quality=58, timeout=4_000)
+        await frame_callback(base64.b64encode(image).decode("ascii"))
+    except PlaywrightError:
+        # A navigation may briefly prevent screenshots; the next capture can succeed.
+        pass
+    except Exception:
+        logger.debug("Live browser frame capture failed", exc_info=True)
+
+
+async def _capture_frames(page, frame_callback, capture_lock: asyncio.Lock) -> None:
     """Capture low-latency JPEG frames while the browser task is active."""
     while True:
-        try:
-            image = await page.screenshot(type="jpeg", quality=58, timeout=4_000)
-            await frame_callback(base64.b64encode(image).decode("ascii"))
-        except PlaywrightError:
-            # A navigation may briefly prevent screenshots; retry on the next tick.
-            pass
-        except Exception:
-            logger.debug("Live browser frame capture failed", exc_info=True)
+        await _capture_frame(page, frame_callback, capture_lock)
         await asyncio.sleep(0.5)
 
 
@@ -426,8 +432,11 @@ async def _execute_plan_browser_with_proxy(
             await context.route("**/*", guard_request)
             page = await context.new_page()
             page.set_default_timeout(10_000)
+            frame_lock = asyncio.Lock()
             if frame_callback is not None:
-                capture_task = asyncio.create_task(_capture_frames(page, frame_callback))
+                capture_task = asyncio.create_task(
+                    _capture_frames(page, frame_callback, frame_lock)
+                )
                 await asyncio.sleep(0)
             if progress_callback is not None:
                 await progress_callback({"message": "Browser ready; opening the requested page…"})
@@ -529,6 +538,8 @@ async def _execute_plan_browser_with_proxy(
                         output_parts.append(text)
 
                 completed += 1
+                if frame_callback is not None:
+                    await _capture_frame(page, frame_callback, frame_lock)
 
             title = await page.title()
             current_url = page.url
