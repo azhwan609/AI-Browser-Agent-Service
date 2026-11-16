@@ -57,6 +57,41 @@ class LiveStreamTests(unittest.TestCase):
         self.assertIn("event: error", response.text)
         self.assertIn("Browser automation failed: BrowserType.launch: Executable doesn't exist", response.text)
 
+    def test_chat_stream_returns_text_without_starting_browser(self):
+        chat_plan = main.BrowserPlan(
+            intent="chat", goal="", reply="Hello! I'm doing well, thanks for asking.", steps=[]
+        )
+        with patch.object(main, "_generate_plan_sync", return_value=chat_plan), patch.object(
+            main, "_execute_plan", new=AsyncMock()
+        ) as browser_execute:
+            response = self.client.post("/execute/stream", json={"task": "Hello, how are you?"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: complete", response.text)
+        self.assertIn("Hello! I'm doing well, thanks for asking.", response.text)
+        self.assertNotIn("Starting the live browser", response.text)
+        browser_execute.assert_not_awaited()
+
+    def test_chat_json_route_returns_text_without_starting_browser(self):
+        chat_plan = main.BrowserPlan(
+            intent="chat", goal="", reply="Hello! I'm doing well, thanks for asking.", steps=[]
+        )
+        with patch.object(main, "_generate_plan_sync", return_value=chat_plan), patch.object(
+            main, "_execute_plan", new=AsyncMock()
+        ) as browser_execute:
+            response = self.client.post("/execute", json={"task": "Hello, how are you?"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["output"], "Hello! I'm doing well, thanks for asking.")
+        self.assertEqual(response.json()["steps_completed"], 0)
+        browser_execute.assert_not_awaited()
+
+    def test_system_prompt_maps_title_text_and_h1_to_extraction_actions(self):
+        self.assertIn("target 'page title' (read page.title()", main.SYSTEM_PROMPT)
+        self.assertIn("target 'css:h1'", main.SYSTEM_PROMPT)
+        self.assertIn("'page text'", main.SYSTEM_PROMPT)
+        self.assertIn("do not return a navigation URL as a substitute", main.SYSTEM_PROMPT)
+
     def test_stream_returns_safe_error_without_key(self):
         with patch.dict(os.environ, {}, clear=True):
             response = self.client.post("/execute/stream", json={"task": "Read example.com"})
