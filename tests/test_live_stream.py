@@ -58,10 +58,9 @@ class LiveStreamTests(unittest.TestCase):
         self.assertIn("Browser automation failed: BrowserType.launch: Executable doesn't exist", response.text)
 
     def test_chat_stream_returns_text_without_starting_browser(self):
-        chat_plan = main.BrowserPlan(
-            intent="chat", goal="", reply="Hello! I'm doing well, thanks for asking.", steps=[]
-        )
-        with patch.object(main, "_generate_plan_sync", return_value=chat_plan), patch.object(
+        with patch.object(
+            main, "_generate_chat_sync", return_value="Hello! I'm doing well, thanks for asking."
+        ) as chat_reply, patch.object(main, "_generate_plan_sync") as planner, patch.object(
             main, "_execute_plan", new=AsyncMock()
         ) as browser_execute:
             response = self.client.post("/execute/stream", json={"task": "Hello, how are you?"})
@@ -70,13 +69,15 @@ class LiveStreamTests(unittest.TestCase):
         self.assertIn("event: complete", response.text)
         self.assertIn("Hello! I'm doing well, thanks for asking.", response.text)
         self.assertNotIn("Starting the live browser", response.text)
+        self.assertIn("Writing a reply", response.text)
+        chat_reply.assert_called_once()
+        planner.assert_not_called()
         browser_execute.assert_not_awaited()
 
     def test_chat_json_route_returns_text_without_starting_browser(self):
-        chat_plan = main.BrowserPlan(
-            intent="chat", goal="", reply="Hello! I'm doing well, thanks for asking.", steps=[]
-        )
-        with patch.object(main, "_generate_plan_sync", return_value=chat_plan), patch.object(
+        with patch.object(
+            main, "_generate_chat_sync", return_value="Hello! I'm doing well, thanks for asking."
+        ), patch.object(main, "_generate_plan_sync") as planner, patch.object(
             main, "_execute_plan", new=AsyncMock()
         ) as browser_execute:
             response = self.client.post("/execute", json={"task": "Hello, how are you?"})
@@ -84,7 +85,16 @@ class LiveStreamTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["output"], "Hello! I'm doing well, thanks for asking.")
         self.assertEqual(response.json()["steps_completed"], 0)
+        planner.assert_not_called()
         browser_execute.assert_not_awaited()
+
+    def test_operational_gate_only_routes_web_tasks_to_browser_planner(self):
+        self.assertFalse(main._requires_browser("Hello, how are you?"))
+        self.assertFalse(main._requires_browser("What is the capital of France?"))
+        self.assertTrue(
+            main._requires_browser("Go to wikipedia.org and give me the main heading (h1) of the page.")
+        )
+        self.assertTrue(main._requires_browser("Get the page title from https://example.org"))
 
     def test_system_prompt_maps_title_text_and_h1_to_extraction_actions(self):
         self.assertIn("target 'page title' (read page.title()", main.SYSTEM_PROMPT)
