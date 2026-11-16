@@ -36,9 +36,14 @@ class LiveStreamTests(unittest.TestCase):
         self.assertIn('"message": "Started"', event)
 
     def test_stream_delivers_frame_status_and_complete(self):
+        stale_frame = base64.b64encode(b"stale frame").decode("ascii")
+        latest_frame = base64.b64encode(b"jpeg").decode("ascii")
+
         async def fake_execute(plan, frame_callback=None, progress_callback=None):
             await progress_callback({"message": "Step 1 of 1: navigate", "step": 1, "total": 1})
-            await frame_callback(base64.b64encode(b"jpeg").decode("ascii"))
+            await frame_callback(stale_frame)
+            await progress_callback({"message": "Page is loading", "step": 1, "total": 1})
+            await frame_callback(latest_frame)
             return "Example Domain", 1, "Example Domain", "https://example.com/"
 
         with patch.object(main, "_generate_plan_sync", return_value=self.plan), patch.object(
@@ -48,8 +53,10 @@ class LiveStreamTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("event: status", response.text)
+        self.assertIn('"message": "Page is loading"', response.text)
         self.assertIn("event: frame", response.text)
-        self.assertIn("data:image/jpeg;base64,anBlZw==", response.text)
+        self.assertIn(f"data:image/jpeg;base64,{latest_frame}", response.text)
+        self.assertNotIn(f"data:image/jpeg;base64,{stale_frame}", response.text)
         self.assertIn("event: complete", response.text)
         self.assertIn('"output": "Example Domain"', response.text)
 

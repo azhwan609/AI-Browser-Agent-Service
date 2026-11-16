@@ -308,7 +308,7 @@ async def _execute_plan(
     if frame_callback is not None:
         display = Display(visible=False, size=(1280, 800))
         try:
-            display.start()
+            await asyncio.to_thread(display.start)
             headless = False
         except Exception:
             logger.warning("Xvfb is unavailable; using headless Chromium for live screenshots", exc_info=True)
@@ -322,7 +322,7 @@ async def _execute_plan(
         )
     finally:
         if display is not None:
-            display.stop()
+            await asyncio.to_thread(display.stop)
 
 
 async def _capture_frames(page, frame_callback) -> None:
@@ -379,6 +379,9 @@ async def _execute_plan_browser(
             page.set_default_timeout(10_000)
             if frame_callback is not None:
                 capture_task = asyncio.create_task(_capture_frames(page, frame_callback))
+                await asyncio.sleep(0)
+            if progress_callback is not None:
+                await progress_callback({"message": "Browser ready; opening the requested page…"})
 
             for index, step in enumerate(plan.steps, start=1):
                 target = step.target.strip()
@@ -663,19 +666,18 @@ async def _execute_stream_events(payload: ExecuteRequest):
         yield _sse_event("error", {"message": plan.goal or "No safe browser actions were proposed."})
         return
 
-    events: asyncio.Queue[tuple[str, dict]] = asyncio.Queue(maxsize=3)
+    events: asyncio.Queue[tuple[str, dict]] = asyncio.Queue()
+    latest_frame: dict | None = None
+    events_ready = asyncio.Event()
 
     def publish(name: str, data: dict) -> None:
-        # Keep only a few recent events if the client is slower than the browser.
-        if events.full():
-            try:
-                events.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-        try:
+        """Preserve all progress while coalescing superseded preview frames."""
+        nonlocal latest_frame
+        if name == "frame":
+            latest_frame = data
+        else:
             events.put_nowait((name, data))
-        except asyncio.QueueFull:
-            pass
+        events_ready.set()
 
     async def frame_callback(encoded: str) -> None:
         publish("frame", {"image": f"data:image/jpeg;base64,{encoded}"})
@@ -700,6 +702,7 @@ async def _execute_stream_events(payload: ExecuteRequest):
                 BROWSER_SEMAPHORE.release()
 
     worker = asyncio.create_task(run_browser())
+    worker.add_done_callback(lambda _task: events_ready.set())
 
     def consume_worker_result(task: asyncio.Task) -> None:
         """Retrieve a detached worker's exception after a client disconnect."""
@@ -713,15 +716,21 @@ async def _execute_stream_events(payload: ExecuteRequest):
             )
 
     try:
-        yield _sse_event("status", {"message": "Starting the live browser…"})
-        while not worker.done():
-            try:
-                name, data = await asyncio.wait_for(events.get(), timeout=0.75)
-                yield _sse_event(name, data)
-            except asyncio.TimeoutError:
+        yield _sse_event("status", {"message": "Launching browser and connecting live preview…"})
+        while True:
+            if not events.empty():
+                name, data = events.get_nowait()
+            elif latest_frame is not None:
+                name, data = "frame", latest_frame
+                latest_frame = None
+            elif worker.done():
+                break
+            else:
+                events_ready.clear()
+                if not events.empty() or latest_frame is not None or worker.done():
+                    continue
+                await events_ready.wait()
                 continue
-        while not events.empty():
-            name, data = events.get_nowait()
             yield _sse_event(name, data)
         output, completed, page_title, current_url = await worker
         result = ExecuteResponse(
