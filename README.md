@@ -20,7 +20,7 @@ export GROQ_MODEL=openai/gpt-oss-20b
 uvicorn main:app --reload
 ```
 
-For headed local live-browser screenshots, install the Xvfb system package (`xvfb`) and run under a virtual display; the application uses `pyvirtualdisplay` to start it for each live task. If Xvfb is unavailable, the live endpoint logs the condition and falls back to headless screenshots.
+Browser tasks run headed under an isolated Xvfb display. The live endpoint streams JPEG screenshots to the UI as Server-Sent Events while the task runs. Install the Xvfb system package (`xvfb`) locally; if the display cannot start, the task returns a friendly error instead of silently switching to headless mode.
 
 Run the automated tests with:
 
@@ -40,4 +40,4 @@ The browser runs on the service, not in the user's local browser, and each execu
 
 ## Render deployment
 
-Render uses the versioned official Playwright Python image `mcr.microsoft.com/playwright/python:v1.63.0-noble`. It provides Chromium and the browser's Linux dependencies. `requirements.txt` pins the Python Playwright package to the same `1.63.0` release, and the browser path is `/ms-playwright`; the Dockerfile does not rerun `playwright install --with-deps`. The service starts `uvicorn main:app` on Render's `PORT` (default 10000). The Blueprint health check uses `/version`, and `autoDeployTrigger: commit` deploys commits to `main`.
+Render uses the versioned official Playwright Python image `mcr.microsoft.com/playwright/python:v1.63.0-noble`. It provides Chromium and the browser's Linux dependencies; the Dockerfile also installs `xvfb` and `xauth` for headed browser sessions. `requirements.txt` pins the Python Playwright package to the same `1.63.0` release, and the browser path is `/ms-playwright`; the Dockerfile does not rerun `playwright install --with-deps`. The service starts `uvicorn main:app` on Render's `PORT` (default 10000). The Blueprint health check uses `/version`, and `autoDeployTrigger: commit` deploys commits to `main`.

@@ -49,9 +49,9 @@ class LiveStreamTests(unittest.TestCase):
         latest_frame = base64.b64encode(b"jpeg").decode("ascii")
 
         async def fake_execute(plan, frame_callback=None, progress_callback=None):
-            await progress_callback({"message": "Step 1 of 1: navigate", "step": 1, "total": 1})
+            await progress_callback({"message": "Working on your request…"})
             await frame_callback(stale_frame)
-            await progress_callback({"message": "Page is loading", "step": 1, "total": 1})
+            await progress_callback({"message": "The page is ready; looking for your answer…"})
             await frame_callback(latest_frame)
             return "Example Domain", 1, "Example Domain", "https://example.com/"
 
@@ -62,9 +62,11 @@ class LiveStreamTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("event: status", response.text)
-        self.assertIn('"message": "Page is loading"', response.text)
+        self.assertIn('"message": "The page is ready; looking for your answer…"', response.text)
         self.assertIn("event: frame", response.text)
         self.assertIn('"browser_task": true', response.text)
+        self.assertNotIn("Step 1 of 1", response.text)
+        self.assertNotIn('"message": "navigate"', response.text)
         self.assertIn(f"data:image/jpeg;base64,{latest_frame}", response.text)
         self.assertNotIn(f"data:image/jpeg;base64,{stale_frame}", response.text)
         self.assertIn("event: complete", response.text)
@@ -88,7 +90,7 @@ class LiveStreamTests(unittest.TestCase):
         status_position = response.text.index('"message": "Status after frame"')
         self.assertLess(frame_position, status_position)
 
-    def test_stream_exposes_playwright_error_message(self):
+    def test_stream_hides_playwright_error_details(self):
         async def fail_execute(plan, frame_callback=None, progress_callback=None):
             raise main.PlaywrightError("BrowserType.launch: Executable doesn't exist")
 
@@ -99,7 +101,9 @@ class LiveStreamTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("event: error", response.text)
-        self.assertIn("Browser automation failed: BrowserType.launch: Executable doesn't exist", response.text)
+        self.assertIn("I couldn’t complete that browser task", response.text)
+        self.assertNotIn("BrowserType.launch", response.text)
+        self.assertNotIn("Executable doesn't exist", response.text)
 
     def test_chat_stream_returns_text_without_starting_browser(self):
         with patch.object(
@@ -316,6 +320,19 @@ class LiveStreamTests(unittest.TestCase):
         fake_display.stop.assert_called_once()
         self.assertFalse(browser_run.await_args.kwargs["headless"])
 
+    def test_virtual_display_failure_does_not_fall_back_to_headless(self):
+        fake_display = unittest.mock.Mock()
+        fake_display.start.side_effect = RuntimeError("Xvfb binary missing")
+        with patch.object(main, "Display", return_value=fake_display), patch.object(
+            main, "_execute_plan_browser", new=AsyncMock()
+        ) as browser_run:
+            with self.assertRaisesRegex(RuntimeError, "live browser could not start"):
+                asyncio.run(main._execute_plan(self.plan))
+
+        fake_display.start.assert_called_once()
+        fake_display.stop.assert_not_called()
+        browser_run.assert_not_awaited()
+
     def test_browser_context_uses_connection_filtering_proxy(self):
         page = unittest.mock.Mock()
         page.set_default_timeout = unittest.mock.Mock()
@@ -339,14 +356,16 @@ class LiveStreamTests(unittest.TestCase):
 
         plan = main.BrowserPlan(goal="No-op proxy check", steps=[])
         with patch.object(main, "async_playwright", return_value=PlaywrightManager()):
-            result = asyncio.run(main._execute_plan_browser(plan, headless=True))
+            result = asyncio.run(main._execute_plan_browser(plan, headless=False))
 
         self.assertEqual(result[2], "Example Domain")
         proxy = browser.new_context.await_args.kwargs["proxy"]
         self.assertRegex(proxy["server"], r"^http://127\.0\.0\.1:\d+$")
+        playwright.chromium.launch.assert_awaited_once_with(headless=False)
 
     def test_live_frame_is_captured_after_navigation(self):
         events = []
+        statuses = []
         page = unittest.mock.Mock()
         page.set_default_timeout = unittest.mock.Mock()
 
@@ -359,6 +378,9 @@ class LiveStreamTests(unittest.TestCase):
 
         async def record_frame(encoded):
             events.append("frame")
+
+        async def record_status(status):
+            statuses.append(status)
 
         page.goto = AsyncMock(side_effect=navigate)
         page.screenshot = AsyncMock(side_effect=screenshot)
@@ -391,12 +413,16 @@ class LiveStreamTests(unittest.TestCase):
                 main._execute_plan_browser_with_proxy(
                     plan,
                     proxy=unittest.mock.Mock(url="http://127.0.0.1:12345"),
-                    headless=True,
+                    headless=False,
                     frame_callback=record_frame,
+                    progress_callback=record_status,
                 )
             )
 
         self.assertEqual(events, ["navigate", "screenshot", "frame"])
+        self.assertGreaterEqual(len(statuses), 2)
+        self.assertTrue(all("step" not in status for status in statuses))
+        self.assertTrue(all("navigate" not in status["message"].lower() for status in statuses))
 
     def test_disconnect_does_not_strand_browser_semaphore(self):
         async def fake_execute(plan, frame_callback=None, progress_callback=None):

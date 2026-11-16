@@ -22,6 +22,16 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("if(data.browser_task)showPanel();else panel.hidden=true;", self.html)
         self.assertIn('"browser_task": browser_task', self.backend)
 
+    def test_live_panel_is_positioned_above_the_composer(self):
+        self.assertIn("function positionPanel()", self.html)
+        self.assertIn("composer.getBoundingClientRect()", self.html)
+
+    def test_browser_execution_requires_headed_chromium_and_hides_steps(self):
+        self.assertIn("headless=False", self.backend)
+        self.assertIn("Display(visible=False", self.backend)
+        self.assertNotIn("using headless Chromium for live screenshots", self.backend)
+        self.assertNotIn("Step {index} of {len(plan.steps)}", self.backend)
+
     def test_incomplete_sse_stream_is_reported_as_an_error(self):
         self.assertIn("if(!terminalEventReceived)throw new Error", self.html)
         self.assertIn("terminalEventReceived=true", self.html)
@@ -38,6 +48,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIsNotNone(package)
         self.assertEqual(image.group(1), package.group(1))
         self.assertIn("PLAYWRIGHT_BROWSERS_PATH=/ms-playwright", self.dockerfile)
+        self.assertIn("xvfb xauth", self.dockerfile)
         self.assertIn("value: /ms-playwright", self.render_config)
         self.assertNotIn("install --with-deps", self.dockerfile)
         self.assertIn("uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}", self.dockerfile)

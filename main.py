@@ -332,27 +332,27 @@ async def _execute_plan(
     frame_callback=None,
     progress_callback=None,
 ) -> tuple[str, int, str, str]:
-    """Run a plan, using Xvfb-backed headed Chromium for live sessions."""
-    display = None
-    headless = True
-    if frame_callback is not None:
-        display = Display(visible=False, size=(1280, 800))
-        try:
-            await asyncio.to_thread(display.start)
-            headless = False
-        except Exception:
-            logger.warning("Xvfb is unavailable; using headless Chromium for live screenshots", exc_info=True)
-            display = None
+    """Run a plan in visible Chromium backed by an isolated Xvfb display."""
+    display = Display(visible=False, size=(1280, 800))
+    try:
+        await asyncio.to_thread(display.start)
+    except Exception as exc:
+        logger.exception("Could not start Xvfb for headed Chromium")
+        raise RuntimeError(
+            "The live browser could not start. Please try again shortly."
+        ) from exc
     try:
         return await _execute_plan_browser(
             plan,
-            headless=headless,
+            headless=False,
             frame_callback=frame_callback,
             progress_callback=progress_callback,
         )
     finally:
-        if display is not None:
+        try:
             await asyncio.to_thread(display.stop)
+        except Exception:
+            logger.warning("Could not stop the Xvfb display cleanly", exc_info=True)
 
 
 async def _capture_frame(page, frame_callback, capture_lock: asyncio.Lock) -> None:
@@ -439,17 +439,13 @@ async def _execute_plan_browser_with_proxy(
                 )
                 await asyncio.sleep(0)
             if progress_callback is not None:
-                await progress_callback({"message": "Browser ready; opening the requested page…"})
+                await progress_callback({"message": "The page is ready; looking for your answer…"})
 
-            for index, step in enumerate(plan.steps, start=1):
+            for step in plan.steps:
                 target = step.target.strip()
                 value = step.value
                 if progress_callback is not None:
-                    await progress_callback({
-                        "message": f"Step {index} of {len(plan.steps)}: {step.action}",
-                        "step": index,
-                        "total": len(plan.steps),
-                    })
+                    await progress_callback({"message": "Working on your request…"})
 
                 if step.action == "navigate":
                     if not await _is_public_web_url(target):
@@ -654,12 +650,16 @@ async def execute(payload: ExecuteRequest) -> ExecuteResponse:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except PlaywrightError as exc:
         logger.exception("Playwright failed while executing the validated browser plan")
-        message = str(exc).strip() or "Unknown Playwright error."
-        raise HTTPException(status_code=502, detail=f"Browser automation failed: {message}") from exc
+        raise HTTPException(
+            status_code=502,
+            detail="I couldn’t complete that browser task. Please try again with a simpler request.",
+        ) from exc
     except Exception as exc:
         logger.exception("Unexpected error while executing the browser plan")
-        message = str(exc).strip() or type(exc).__name__
-        raise HTTPException(status_code=502, detail=f"Browser task failed: {message}") from exc
+        raise HTTPException(
+            status_code=502,
+            detail="I couldn’t complete that browser task. Please try again shortly.",
+        ) from exc
     finally:
         BROWSER_SEMAPHORE.release()
 
@@ -836,14 +836,18 @@ async def _execute_stream_events(payload: ExecuteRequest):
         yield _sse_event("error", {"message": "The browser task exceeded its time limit."})
     except ValueError as exc:
         yield _sse_event("error", {"message": str(exc)})
-    except PlaywrightError as exc:
+    except PlaywrightError:
         logger.exception("Playwright failed during a live browser task")
-        message = str(exc).strip() or "Unknown Playwright error."
-        yield _sse_event("error", {"message": f"Browser automation failed: {message}"})
+        yield _sse_event(
+            "error",
+            {"message": "I couldn’t complete that browser task. Please try again with a simpler request."},
+        )
     except Exception as exc:
         logger.exception("Unexpected error during a live browser task")
-        message = str(exc).strip() or type(exc).__name__
-        yield _sse_event("error", {"message": f"Browser task failed: {message}"})
+        yield _sse_event(
+            "error",
+            {"message": "I couldn’t complete that browser task. Please try again shortly."},
+        )
     finally:
         if worker.done():
             await asyncio.gather(worker, return_exceptions=True)
