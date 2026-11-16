@@ -19,7 +19,7 @@ export GROQ_MODEL=openai/gpt-oss-20b
 uvicorn main:app --reload
 ```
 
-For headed live browser screenshots, install the Xvfb system package (`xvfb`) and run under a virtual display; the application uses `pyvirtualdisplay` to start it for each live task. If Xvfb is unavailable, the live endpoint logs the condition and falls back to headless screenshots. `render.yaml` includes Xvfb installation in its build command.
+For headed local live-browser screenshots, install the Xvfb system package (`xvfb`) and run under a virtual display; the application uses `pyvirtualdisplay` to start it for each live task. If Xvfb is unavailable, the live endpoint logs the condition and falls back to headless screenshots. Render's Native Python build filesystem is read-only, so installing Xvfb with `apt-get` in `render.yaml` fails there; the current service uses headless screenshots unless moved to a Docker runtime with Xvfb installed in the image.
 
 Run the automated tests with:
 
@@ -39,10 +39,4 @@ The browser runs on the service, not in the user's local browser, and each execu
 
 ## Render deployment note
 
-The current Render service uses a Build Command set directly in the service dashboard. A `render.yaml` edit does not necessarily overwrite that existing setting. To guarantee headed Chromium, update the service's dashboard Build Command to:
-
-```bash
-apt-get update && apt-get install -y xvfb && PLAYWRIGHT_BROWSERS_PATH=0 pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 playwright install chromium
-```
-
-The `main` branch is configured for automatic deployment after a push. Confirm the deployment reaches `live` and test the public service before treating a push as a successful deployment.
+The `main` branch deploys automatically on push. Keep the Native Python Build Command free of `apt-get`; Render's build logs show the root filesystem is read-only. To force headed Chromium on Render, the service needs a Docker runtime whose image installs Xvfb and Chromium dependencies. Until then the streaming endpoint remains usable with headless screenshots.

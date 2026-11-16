@@ -70,6 +70,10 @@ class ExecuteResponse(BaseModel):
     current_url: str
 
 
+class BrowserBusyError(Exception):
+    """Raised when the single browser slot cannot be acquired promptly."""
+
+
 PLAN_SCHEMA = {
     "type": "object",
     "properties": {
@@ -534,12 +538,6 @@ async def _execute_stream_events(payload: ExecuteRequest):
         yield _sse_event("error", {"message": plan.goal or "No safe browser actions were proposed."})
         return
 
-    try:
-        await asyncio.wait_for(BROWSER_SEMAPHORE.acquire(), timeout=2)
-    except asyncio.TimeoutError:
-        yield _sse_event("error", {"message": "The browser is busy. Try again shortly."})
-        return
-
     events: asyncio.Queue[tuple[str, dict]] = asyncio.Queue(maxsize=3)
 
     def publish(name: str, data: dict) -> None:
@@ -560,12 +558,35 @@ async def _execute_stream_events(payload: ExecuteRequest):
     async def progress_callback(status: dict) -> None:
         publish("status", status)
 
-    worker = asyncio.create_task(
-        asyncio.wait_for(
-            _execute_plan(plan, frame_callback, progress_callback),
-            timeout=60,
-        )
-    )
+    async def run_browser() -> tuple[str, int, str, str]:
+        acquired = False
+        try:
+            try:
+                await asyncio.wait_for(BROWSER_SEMAPHORE.acquire(), timeout=2)
+            except asyncio.TimeoutError as exc:
+                raise BrowserBusyError from exc
+            acquired = True
+            return await asyncio.wait_for(
+                _execute_plan(plan, frame_callback, progress_callback),
+                timeout=60,
+            )
+        finally:
+            if acquired:
+                BROWSER_SEMAPHORE.release()
+
+    worker = asyncio.create_task(run_browser())
+
+    def consume_worker_result(task: asyncio.Task) -> None:
+        """Retrieve a detached worker's exception after a client disconnect."""
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "Detached browser worker failed after client disconnect",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
     try:
         yield _sse_event("status", {"message": "Starting the live browser…"})
         while not worker.done():
@@ -588,6 +609,8 @@ async def _execute_stream_events(payload: ExecuteRequest):
             current_url=current_url,
         )
         yield _sse_event("complete", result.model_dump())
+    except BrowserBusyError:
+        yield _sse_event("error", {"message": "The browser is busy. Try again shortly."})
     except asyncio.TimeoutError:
         yield _sse_event("error", {"message": "The browser task exceeded its time limit."})
     except ValueError as exc:
@@ -599,10 +622,12 @@ async def _execute_stream_events(payload: ExecuteRequest):
         logger.exception("Unexpected error during a live browser task")
         yield _sse_event("error", {"message": "The browser task failed unexpectedly."})
     finally:
-        if not worker.done():
-            worker.cancel()
-        await asyncio.gather(worker, return_exceptions=True)
-        BROWSER_SEMAPHORE.release()
+        if worker.done():
+            await asyncio.gather(worker, return_exceptions=True)
+        else:
+            # A disconnected client must not cancel the holder before its finally releases
+            # the semaphore. The bounded worker completes or times out on its own.
+            worker.add_done_callback(consume_worker_result)
 
 
 @app.post("/execute/stream", include_in_schema=False)

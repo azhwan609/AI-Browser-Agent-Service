@@ -75,6 +75,25 @@ class LiveStreamTests(unittest.TestCase):
         fake_display.stop.assert_called_once()
         self.assertFalse(browser_run.await_args.kwargs["headless"])
 
+    def test_disconnect_does_not_strand_browser_semaphore(self):
+        async def fake_execute(plan, frame_callback=None, progress_callback=None):
+            await asyncio.sleep(0.05)
+            return "Example Domain", 1, "Example Domain", "https://example.com/"
+
+        async def scenario():
+            semaphore = asyncio.Semaphore(1)
+            with patch.object(main, "BROWSER_SEMAPHORE", semaphore), patch.object(
+                main, "_generate_plan_sync", return_value=self.plan
+            ), patch.object(main, "_execute_plan", side_effect=fake_execute):
+                events = main._execute_stream_events(main.ExecuteRequest(task="Read example.com"))
+                await anext(events)  # planning status
+                await anext(events)  # browser launch status; worker is now detached
+                await events.aclose()  # simulate the client disconnecting
+                await asyncio.sleep(0.1)
+                self.assertEqual(semaphore._value, 1)
+
+        asyncio.run(scenario())
+
 
 if __name__ == "__main__":
     unittest.main()
