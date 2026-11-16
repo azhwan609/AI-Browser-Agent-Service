@@ -6,7 +6,6 @@ import ipaddress
 import json
 import logging
 import os
-import re
 import socket
 from pathlib import Path
 from typing import Literal
@@ -487,10 +486,12 @@ async def execute(payload: ExecuteRequest) -> ExecuteResponse:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except PlaywrightError as exc:
         logger.exception("Playwright failed while executing the validated browser plan")
-        raise HTTPException(status_code=502, detail="Browser automation failed.") from exc
+        message = str(exc).strip() or "Unknown Playwright error."
+        raise HTTPException(status_code=502, detail=f"Browser automation failed: {message}") from exc
     except Exception as exc:
         logger.exception("Unexpected error while executing the browser plan")
-        raise HTTPException(status_code=502, detail="Browser task failed unexpectedly.") from exc
+        message = str(exc).strip() or type(exc).__name__
+        raise HTTPException(status_code=502, detail=f"Browser task failed: {message}") from exc
     finally:
         BROWSER_SEMAPHORE.release()
 
@@ -620,12 +621,14 @@ async def _execute_stream_events(payload: ExecuteRequest):
         yield _sse_event("error", {"message": "The browser task exceeded its time limit."})
     except ValueError as exc:
         yield _sse_event("error", {"message": str(exc)})
-    except PlaywrightError:
+    except PlaywrightError as exc:
         logger.exception("Playwright failed during a live browser task")
-        yield _sse_event("error", {"message": "Browser automation failed."})
-    except Exception:
+        message = str(exc).strip() or "Unknown Playwright error."
+        yield _sse_event("error", {"message": f"Browser automation failed: {message}"})
+    except Exception as exc:
         logger.exception("Unexpected error during a live browser task")
-        yield _sse_event("error", {"message": "The browser task failed unexpectedly."})
+        message = str(exc).strip() or type(exc).__name__
+        yield _sse_event("error", {"message": f"Browser task failed: {message}"})
     finally:
         if worker.done():
             await asyncio.gather(worker, return_exceptions=True)

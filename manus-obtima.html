@@ -863,7 +863,15 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
       const task=(payload.text||'').trim();if(!task)return 'Please enter a task for the agent.';
       showPanel();window.__liveBrowserResult=null;
       try{
-        const response=await fetch('/execute/stream',{method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify({task})});
+        // This app uses same-origin HTTP streaming (SSE), not WebSockets. URL resolution
+        // follows the current host and automatically uses HTTPS when the page is HTTPS.
+        const endpoint=new URL('/execute/stream',window.location.href);
+        let response;
+        try{
+          response=await fetch(endpoint.href,{method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify({task})});
+        }catch(error){
+          throw new Error('Could not reach '+endpoint.origin+'/execute/stream: '+(error&&error.message||'network request failed'));
+        }
         await consume(response);
         const result=window.__liveBrowserResult;
         if(!result)return 'The task finished, but no final result was received.';

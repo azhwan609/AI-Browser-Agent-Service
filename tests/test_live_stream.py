@@ -44,6 +44,19 @@ class LiveStreamTests(unittest.TestCase):
         self.assertIn("event: complete", response.text)
         self.assertIn('"output": "Example Domain"', response.text)
 
+    def test_stream_exposes_playwright_error_message(self):
+        async def fail_execute(plan, frame_callback=None, progress_callback=None):
+            raise main.PlaywrightError("BrowserType.launch: Executable doesn't exist")
+
+        with patch.object(main, "_generate_plan_sync", return_value=self.plan), patch.object(
+            main, "_execute_plan", side_effect=fail_execute
+        ):
+            response = self.client.post("/execute/stream", json={"task": "Read example.com"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: error", response.text)
+        self.assertIn("Browser automation failed: BrowserType.launch: Executable doesn't exist", response.text)
+
     def test_stream_returns_safe_error_without_key(self):
         with patch.dict(os.environ, {}, clear=True):
             response = self.client.post("/execute/stream", json={"task": "Read example.com"})
