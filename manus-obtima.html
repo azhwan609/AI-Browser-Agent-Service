@@ -813,12 +813,12 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
 (function(){
   const style = document.createElement('style');
   style.textContent = `
-    .live-browser-panel{position:fixed;z-index:10000;right:18px;bottom:18px;width:min(440px,calc(100vw - 24px));overflow:hidden;border:1px solid rgba(255,255,255,.14);border-radius:16px;background:#101114;color:#f5f5f5;box-shadow:0 18px 60px rgba(0,0,0,.45);font:13px/1.4 system-ui,sans-serif}
-    .live-browser-panel[hidden]{display:none}.live-browser-head{display:flex;align-items:center;gap:9px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.1)}
+    .live-browser-panel{position:fixed;z-index:10000;right:12px;bottom:8px;width:min(400px,calc(100vw - 24px));overflow:hidden;border:1px solid rgba(255,255,255,.14);border-radius:16px;background:#101114;color:#f5f5f5;box-shadow:0 18px 60px rgba(0,0,0,.45);font:13px/1.4 system-ui,sans-serif}
+    .live-browser-panel[hidden]{display:none}.live-browser-head{display:flex;align-items:center;gap:9px;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.1)}
     .live-browser-dot{width:8px;height:8px;flex:none;border-radius:50%;background:#f05b66;box-shadow:0 0 10px #f05b6680}.live-browser-title{font-weight:650;flex:1}.live-browser-close{border:0;background:transparent;color:#aaa;font-size:21px;line-height:1;cursor:pointer;padding:0 2px}.live-browser-close:focus-visible{outline:2px solid #aaa;border-radius:4px}
     .live-browser-frame{display:block;width:100%;aspect-ratio:16/10;object-fit:contain;background:#070708}.live-browser-empty{display:grid;place-items:center;color:#96969e;aspect-ratio:16/10;background:linear-gradient(145deg,#17181d,#09090b)}
-    .live-browser-status{min-height:40px;padding:10px 14px;color:#c5c5cc;overflow-wrap:anywhere}.live-browser-panel.done .live-browser-dot{background:#39c985;box-shadow:0 0 10px #39c98580}.live-browser-panel.failed .live-browser-dot{background:#f05b66}
-    @media(max-width:600px){.live-browser-panel{right:12px;bottom:12px;width:min(100vw - 24px,440px)}}`;
+    .live-browser-status{min-height:34px;padding:8px 12px;color:#c5c5cc;overflow-wrap:anywhere}.live-browser-panel.done .live-browser-dot{background:#39c985;box-shadow:0 0 10px #39c98580}.live-browser-panel.failed .live-browser-dot{background:#f05b66}
+    @media(max-width:600px){.live-browser-panel{right:12px;bottom:max(6px,env(safe-area-inset-bottom));width:min(320px,calc(100vw - 24px))}.live-browser-frame,.live-browser-empty{max-height:22vh}}`;
   document.head.appendChild(style);
   const panel=document.createElement('section');
   panel.className='live-browser-panel'; panel.hidden=true; panel.setAttribute('aria-label','Live Browser');
