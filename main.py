@@ -182,6 +182,12 @@ async def execute_version() -> PlainTextResponse:
     return PlainTextResponse(VERSION_TAG)
 
 
+@app.get("/version", response_class=PlainTextResponse)
+async def version() -> PlainTextResponse:
+    """Return the deployment version tag for an easy browser check."""
+    return PlainTextResponse(VERSION_TAG)
+
+
 @app.get("/", include_in_schema=False)
 async def serve_frontend() -> FileResponse:
     """Serve the bundled chat UI."""

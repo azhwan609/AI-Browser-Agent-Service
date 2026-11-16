@@ -20,12 +20,14 @@ class LiveStreamTests(unittest.TestCase):
         self.key.start()
         self.addCleanup(self.key.stop)
 
-    def test_execute_get_returns_version_tag(self):
-        response = self.client.get("/execute")
+    def test_version_routes_return_version_tag(self):
+        for path in ("/version", "/execute"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.text, "V2.0 - Chat Routing Active")
-        self.assertTrue(response.headers["content-type"].startswith("text/plain"))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.text, "V2.0 - Chat Routing Active")
+                self.assertTrue(response.headers["content-type"].startswith("text/plain"))
 
     def test_sse_event_format(self):
         event = main._sse_event("status", {"message": "Started"})
