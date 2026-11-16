@@ -187,6 +187,93 @@ class LiveStreamTests(unittest.TestCase):
         self.assertEqual(h1, "Artificial intelligence")
         page.locator.assert_called_with("h1")
 
+    def test_first_paragraph_extraction_reads_only_the_first_paragraph(self):
+        page = unittest.mock.Mock()
+        first_paragraph = unittest.mock.Mock()
+        first_paragraph.inner_text = AsyncMock(return_value="First paragraph only.")
+        page.locator.return_value.first = first_paragraph
+
+        result = asyncio.run(main._extract_page_content(page, "first paragraph"))
+
+        self.assertEqual(result, "First paragraph only.")
+        page.locator.assert_called_once_with("p")
+        first_paragraph.inner_text.assert_awaited_once_with(timeout=10_000)
+
+    def test_title_request_replaces_a_planner_url_extraction(self):
+        plan = main.BrowserPlan(
+            goal="Open Google and report its title",
+            steps=[
+                main.BrowserAction(action="navigate", target="https://www.google.com/", value=""),
+                main.BrowserAction(action="extract", target="url", value=""),
+            ],
+        )
+
+        normalized = main._enforce_requested_extraction(
+            plan, "Go to google.com and tell me the title"
+        )
+
+        self.assertEqual([step.action for step in normalized.steps], ["navigate", "extract"])
+        self.assertEqual(normalized.steps[-1].target, "page title")
+        self.assertEqual(plan.steps[-1].target, "url")
+
+    def test_explicit_extraction_requests_map_to_stable_targets(self):
+        cases = (
+            ("Go to Wikipedia and get the main heading (h1)", "css:h1"),
+            ("Go to Wikipedia and extract the first paragraph", "first paragraph"),
+            ("Go to example.com and get text", "page text"),
+            ("برو به example.com و عنوان صفحه را بگو", "page title"),
+            ("برو به ویکی‌پدیا و عنوان اصلی را بگو", "css:h1"),
+        )
+        for task, expected_target in cases:
+            with self.subTest(task=task):
+                self.assertEqual(main._requested_extraction_target(task), expected_target)
+
+    def test_json_endpoint_enforces_requested_title_extraction(self):
+        captured = {}
+
+        async def fake_execute(plan, frame_callback=None, progress_callback=None):
+            captured["plan"] = plan
+            return "Google", len(plan.steps), "Google", "https://www.google.com/"
+
+        navigate_only = main.BrowserPlan(
+            goal="Open Google", steps=[
+                main.BrowserAction(action="navigate", target="https://www.google.com/", value="")
+            ]
+        )
+        with patch.object(main, "_generate_plan_sync", return_value=navigate_only), patch.object(
+            main, "_execute_plan", side_effect=fake_execute
+        ):
+            response = self.client.post(
+                "/execute", json={"task": "Go to google.com and tell me the title"}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["output"], "Google")
+        self.assertEqual(captured["plan"].steps[-1].target, "page title")
+
+    def test_stream_endpoint_enforces_requested_title_extraction(self):
+        captured = {}
+
+        async def fake_execute(plan, frame_callback=None, progress_callback=None):
+            captured["plan"] = plan
+            return "Google", len(plan.steps), "Google", "https://www.google.com/"
+
+        navigate_only = main.BrowserPlan(
+            goal="Open Google", steps=[
+                main.BrowserAction(action="navigate", target="https://www.google.com/", value="")
+            ]
+        )
+        with patch.object(main, "_generate_plan_sync", return_value=navigate_only), patch.object(
+            main, "_execute_plan", side_effect=fake_execute
+        ):
+            response = self.client.post(
+                "/execute/stream", json={"task": "Go to google.com and tell me the title"}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('"output": "Google"', response.text)
+        self.assertEqual(captured["plan"].steps[-1].target, "page title")
+
     def test_browser_plan_rejects_more_than_six_steps(self):
         action = main.BrowserAction(action="navigate", target="https://example.com", value="")
         with self.assertRaises(ValidationError):

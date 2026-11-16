@@ -102,6 +102,46 @@ class BrowserPlan(BaseModel):
     steps: list[BrowserAction] = Field(max_length=MAX_ACTIONS)
 
 
+def _requested_extraction_target(task: str) -> str | None:
+    """Map explicit content requests to a stable DOM extraction target."""
+    if re.search(r"\bh2\b", task, re.IGNORECASE):
+        return "css:h2"
+    if re.search(r"\b(?:h1|main\s+heading|heading)\b", task, re.IGNORECASE) or re.search(
+        r"(?:عنوان\s*اصلی|تیتر|سرعنوان|سرتیتر|هدینگ)", task, re.IGNORECASE
+    ):
+        return "css:h1"
+    if re.search(r"\bfirst\s+paragraph\b", task, re.IGNORECASE) or re.search(
+        r"(?:اولین\s*پاراگراف|پاراگراف\s+اول)", task
+    ):
+        return "first paragraph"
+    if re.search(r"\bparagraph\b", task, re.IGNORECASE) or "پاراگراف" in task:
+        return "css:p"
+    if re.search(r"\btitle\b", task, re.IGNORECASE) or re.search(
+        r"(?:عنوان(?:\s+صفحه)?|نام\s+صفحه)", task
+    ):
+        return "page title"
+    if re.search(
+        r"\b(?:page|webpage|website|site)\s+(?:text|content)\b|\bvisible\s+(?:page\s+)?text\b|\b(?:get|extract|read)\s+(?:the\s+)?(?:page\s+)?text\b",
+        task,
+        re.IGNORECASE,
+    ) or re.search(r"(?:متن\s*صفحه|متن\s*وب\s*سایت|محتوای\s*صفحه)", task):
+        return "page text"
+    return None
+
+
+def _enforce_requested_extraction(plan: BrowserPlan, task: str) -> BrowserPlan:
+    """Ensure the planner extracts the requested content after its web actions."""
+    target = _requested_extraction_target(task)
+    if target is None or not any(step.action != "extract" for step in plan.steps):
+        return plan
+
+    steps = [step for step in plan.steps if step.action != "extract"]
+    if len(steps) >= MAX_ACTIONS:
+        raise ValueError("The browser plan leaves no room for the requested extraction step.")
+    steps.append(BrowserAction(action="extract", target=target, value=""))
+    return plan.model_copy(update={"steps": steps})
+
+
 class ExecuteResponse(BaseModel):
     """Result returned by the browser task endpoint."""
 
@@ -514,6 +554,8 @@ async def _extract_page_content(page, target: str) -> str:
         return await page.locator("body").evaluate(
             "element => (element.innerText || '').slice(0, 4000)"
         )
+    if normalized == "first paragraph":
+        return await page.locator("p").first.inner_text(timeout=10_000)
     if normalized.startswith("css:"):
         selector = target[4:].strip()
         if not selector or len(selector) > 300:
@@ -563,6 +605,12 @@ async def execute(payload: ExecuteRequest) -> ExecuteResponse:
         ) from exc
     finally:
         GROQ_SEMAPHORE.release()
+
+    if browser_task:
+        try:
+            plan = _enforce_requested_extraction(plan, payload.task)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if not browser_task:
         return ExecuteResponse(
@@ -656,6 +704,13 @@ async def _execute_stream_events(payload: ExecuteRequest):
         return
     finally:
         GROQ_SEMAPHORE.release()
+
+    if browser_task:
+        try:
+            plan = _enforce_requested_extraction(plan, payload.task)
+        except ValueError as exc:
+            yield _sse_event("error", {"message": str(exc)})
+            return
 
     if not browser_task:
         if not reply:
