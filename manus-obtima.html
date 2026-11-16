@@ -809,44 +809,72 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
 
 
 <script>
-/* AI_BROWSER_AGENT_BACKEND_ADAPTER: route text tasks to FastAPI without changing the UI. */
-window.ShiwaUI.connect({
-  async send(payload) {
-    if (payload.files && payload.files.length) {
-      throw new Error('File attachments are not supported by this backend yet.');
-    }
-    const task = (payload.text || '').trim();
-    if (!task) {
-      return 'Please enter a task for the agent.';
-    }
-    const response = await fetch('/execute', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task })
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const friendlyErrors = {
-        422: 'I couldn’t complete that request safely or find the requested information. Try rephrasing your task.',
-        429: 'I’m busy right now. Please try again in a moment.',
-        502: 'I couldn’t finish that task. Please try again with a simpler request.',
-        503: 'The agent is temporarily unavailable. Please try again later.',
-        504: 'That page took too long to respond. Please try again.'
-      };
-      throw new Error(friendlyErrors[response.status] || 'Something went wrong while completing your task. Please try again.');
-    }
-    if (!result.success) {
-      throw new Error('I couldn’t finish that task. Please try again with a simpler request.');
-    }
-    // Keep Playwright's navigation/action trace and internal metadata out of chat.
-    // The backend output contains extracted user-requested content only.
-    const answer = (typeof result.output === 'string' ? result.output : '').trim();
-    if (answer) return answer;
-    const pageTitle = (typeof result.page_title === 'string' ? result.page_title : '').trim();
-    if (pageTitle) return pageTitle;
-    return 'The task finished, but I couldn’t find an answer on that page.';
+/* AI_BROWSER_AGENT_BACKEND_ADAPTER: fetch and render the live Playwright stream. */
+(function(){
+  const style = document.createElement('style');
+  style.textContent = `
+    .live-browser-panel{position:fixed;z-index:10000;right:18px;bottom:18px;width:min(440px,calc(100vw - 24px));overflow:hidden;border:1px solid rgba(255,255,255,.14);border-radius:16px;background:#101114;color:#f5f5f5;box-shadow:0 18px 60px rgba(0,0,0,.45);font:13px/1.4 system-ui,sans-serif}
+    .live-browser-panel[hidden]{display:none}.live-browser-head{display:flex;align-items:center;gap:9px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.1)}
+    .live-browser-dot{width:8px;height:8px;flex:none;border-radius:50%;background:#f05b66;box-shadow:0 0 10px #f05b6680}.live-browser-title{font-weight:650;flex:1}.live-browser-close{border:0;background:transparent;color:#aaa;font-size:21px;line-height:1;cursor:pointer;padding:0 2px}.live-browser-close:focus-visible{outline:2px solid #aaa;border-radius:4px}
+    .live-browser-frame{display:block;width:100%;aspect-ratio:16/10;object-fit:contain;background:#070708}.live-browser-empty{display:grid;place-items:center;color:#96969e;aspect-ratio:16/10;background:linear-gradient(145deg,#17181d,#09090b)}
+    .live-browser-status{min-height:40px;padding:10px 14px;color:#c5c5cc;overflow-wrap:anywhere}.live-browser-panel.done .live-browser-dot{background:#39c985;box-shadow:0 0 10px #39c98580}.live-browser-panel.failed .live-browser-dot{background:#f05b66}
+    @media(max-width:600px){.live-browser-panel{right:12px;bottom:12px;width:min(100vw - 24px,440px)}}`;
+  document.head.appendChild(style);
+  const panel=document.createElement('section');
+  panel.className='live-browser-panel'; panel.hidden=true; panel.setAttribute('aria-label','Live Browser');
+  panel.innerHTML='<div class="live-browser-head"><span class="live-browser-dot" aria-hidden="true"></span><span class="live-browser-title">Live Browser</span><button class="live-browser-close" type="button" aria-label="Close Live Browser">×</button></div><div class="live-browser-empty">Waiting for the browser preview…</div><div class="live-browser-status" role="status" aria-live="polite">Ready</div>';
+  document.body.appendChild(panel);
+  const status=panel.querySelector('.live-browser-status');
+  panel.querySelector('.live-browser-close').addEventListener('click',()=>{panel.hidden=true});
+  function showPanel(){panel.hidden=false;panel.classList.remove('done','failed');status.textContent='Planning your task…'}
+  function onEvent(name,data){
+    if(name==='status') status.textContent=String(data.message||'Working…');
+    else if(name==='frame'){
+      if(typeof data.image!=='string'||!data.image.startsWith('data:image/jpeg;base64,'))return;
+      let img=panel.querySelector('img.live-browser-frame');
+      if(!img){img=document.createElement('img');img.className='live-browser-frame';img.alt='Live screenshot of the Playwright browser';panel.querySelector('.live-browser-empty')?.replaceWith(img)}
+      img.src=data.image;
+    } else if(name==='complete'){window.__liveBrowserResult=data;panel.classList.add('done');status.textContent='Task complete';}
+    else if(name==='error'){panel.classList.add('failed');throw new Error(String(data.message||'The browser task failed.'));}
   }
-});
-</script>
+  function parseEvent(raw){
+    if(!raw||raw.startsWith(':'))return;
+    let event='message',data=[];
+    for(const line of raw.split(/\r?\n/)){
+      if(line.startsWith('event:'))event=line.slice(6).trim();
+      else if(line.startsWith('data:'))data.push(line.slice(5).trimStart());
+    }
+    if(!data.length)return;
+    let parsed;try{parsed=JSON.parse(data.join('\n'))}catch(_){return}
+    onEvent(event,parsed);
+  }
+  async function consume(response){
+    if(!response.ok){let body={};try{body=await response.json()}catch(_){};throw new Error(body.detail||'Could not start the browser task. Please try again.')}
+    if(!response.body||!response.body.getReader)throw new Error('Live streaming is not supported by this browser.');
+    const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+    while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});
+      let boundary;while((boundary=buffer.search(/\r?\n\r?\n/))!==-1){const eventText=buffer.slice(0,boundary);const separator=buffer.slice(boundary).match(/^\r?\n\r?\n/)[0];buffer=buffer.slice(boundary+separator.length);parseEvent(eventText)}
+    }
+    buffer+=decoder.decode();if(buffer.trim())parseEvent(buffer);
+  }
+  window.ShiwaUI.connect({
+    async send(payload){
+      if(payload.files&&payload.files.length)throw new Error('File attachments are not supported by this backend yet.');
+      const task=(payload.text||'').trim();if(!task)return 'Please enter a task for the agent.';
+      showPanel();window.__liveBrowserResult=null;
+      try{
+        const response=await fetch('/execute/stream',{method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify({task})});
+        await consume(response);
+        const result=window.__liveBrowserResult;
+        if(!result)return 'The task finished, but no final result was received.';
+        window.__liveBrowserResult=null;
+        const answer=(typeof result.output==='string'?result.output:'').trim();
+        if(answer)return answer;
+        const pageTitle=(typeof result.page_title==='string'?result.page_title:'').trim();
+        return pageTitle||'The task finished, but I couldn’t find an answer on that page.';
+      }catch(error){panel.classList.add('failed');status.textContent=error.message||'Task failed';throw error}
+    }
+  });
+})();</script>
 </body>
 </html>

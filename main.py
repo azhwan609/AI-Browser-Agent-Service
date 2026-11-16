@@ -1,6 +1,7 @@
 """FastAPI single-page app with a constrained Groq-planned browser agent."""
 
 import asyncio
+import base64
 import ipaddress
 import json
 import logging
@@ -15,9 +16,10 @@ from urllib.parse import urlsplit
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from groq import Groq
 from pydantic import BaseModel, ConfigDict, Field
+from pyvirtualdisplay import Display
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
@@ -223,18 +225,68 @@ async def _is_public_web_url(
     return is_public
 
 
-async def _execute_plan(plan: BrowserPlan) -> tuple[str, int, str, str]:
+async def _execute_plan(
+    plan: BrowserPlan,
+    frame_callback=None,
+    progress_callback=None,
+) -> tuple[str, int, str, str]:
+    """Run a plan, using Xvfb-backed headed Chromium for live sessions."""
+    display = None
+    headless = True
+    if frame_callback is not None:
+        display = Display(visible=False, size=(1280, 800))
+        try:
+            display.start()
+            headless = False
+        except Exception:
+            logger.warning("Xvfb is unavailable; using headless Chromium for live screenshots", exc_info=True)
+            display = None
+    try:
+        return await _execute_plan_browser(
+            plan,
+            headless=headless,
+            frame_callback=frame_callback,
+            progress_callback=progress_callback,
+        )
+    finally:
+        if display is not None:
+            display.stop()
+
+
+async def _capture_frames(page, frame_callback) -> None:
+    """Capture low-latency JPEG frames while the browser task is active."""
+    while True:
+        try:
+            image = await page.screenshot(type="jpeg", quality=58, timeout=4_000)
+            await frame_callback(base64.b64encode(image).decode("ascii"))
+        except PlaywrightError:
+            # A navigation may briefly prevent screenshots; retry on the next tick.
+            pass
+        except Exception:
+            logger.debug("Live browser frame capture failed", exc_info=True)
+        await asyncio.sleep(0.5)
+
+
+async def _execute_plan_browser(
+    plan: BrowserPlan,
+    *,
+    headless: bool,
+    frame_callback=None,
+    progress_callback=None,
+) -> tuple[str, int, str, str]:
     """Execute the fixed action vocabulary in a fresh, anonymous browser context."""
     output_parts: list[str] = []
     completed = 0
     host_cache: dict[tuple[str, int], bool] = {}
 
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True)
+        browser = await playwright.chromium.launch(headless=headless)
+        capture_task = None
         try:
             context = await browser.new_context(
                 accept_downloads=False,
                 service_workers="block",
+                viewport={"width": 1280, "height": 800},
             )
 
             async def guard_request(route) -> None:
@@ -253,10 +305,18 @@ async def _execute_plan(plan: BrowserPlan) -> tuple[str, int, str, str]:
             await context.route("**/*", guard_request)
             page = await context.new_page()
             page.set_default_timeout(10_000)
+            if frame_callback is not None:
+                capture_task = asyncio.create_task(_capture_frames(page, frame_callback))
 
-            for step in plan.steps:
+            for index, step in enumerate(plan.steps, start=1):
                 target = step.target.strip()
                 value = step.value
+                if progress_callback is not None:
+                    await progress_callback({
+                        "message": f"Step {index} of {len(plan.steps)}: {step.action}",
+                        "step": index,
+                        "total": len(plan.steps),
+                    })
 
                 if step.action == "navigate":
                     if not await _is_public_web_url(target, host_cache):
@@ -358,6 +418,12 @@ async def _execute_plan(plan: BrowserPlan) -> tuple[str, int, str, str]:
             current_url = page.url
             return "\n\n".join(output_parts)[:16_000], completed, title, current_url
         finally:
+            if capture_task is not None:
+                capture_task.cancel()
+                try:
+                    await capture_task
+                except asyncio.CancelledError:
+                    pass
             await browser.close()
 
 
@@ -427,4 +493,127 @@ async def execute(payload: ExecuteRequest) -> ExecuteResponse:
         steps_completed=completed,
         page_title=page_title,
         current_url=current_url,
+    )
+
+
+def _sse_event(name: str, data: dict) -> str:
+    """Serialize one named Server-Sent Event."""
+    return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _execute_stream_events(payload: ExecuteRequest):
+    """Stream status and screenshots before sending the final result."""
+    yield _sse_event("status", {"message": "Planning your task…"})
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        yield _sse_event("error", {"message": "The browser agent is not configured."})
+        return
+    model = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL).strip()
+
+    try:
+        await asyncio.wait_for(GROQ_SEMAPHORE.acquire(), timeout=2)
+    except asyncio.TimeoutError:
+        yield _sse_event("error", {"message": "The agent is busy. Try again shortly."})
+        return
+    try:
+        plan = await asyncio.wait_for(
+            asyncio.to_thread(_generate_plan_sync, payload.task, api_key, model),
+            timeout=45,
+        )
+    except asyncio.TimeoutError:
+        yield _sse_event("error", {"message": "Task planning timed out."})
+        return
+    except Exception:
+        logger.exception("Groq planning failed for a live browser task")
+        yield _sse_event("error", {"message": "Could not create a browser plan. Please retry."})
+        return
+    finally:
+        GROQ_SEMAPHORE.release()
+
+    if not plan.steps:
+        yield _sse_event("error", {"message": plan.goal or "No safe browser actions were proposed."})
+        return
+
+    try:
+        await asyncio.wait_for(BROWSER_SEMAPHORE.acquire(), timeout=2)
+    except asyncio.TimeoutError:
+        yield _sse_event("error", {"message": "The browser is busy. Try again shortly."})
+        return
+
+    events: asyncio.Queue[tuple[str, dict]] = asyncio.Queue(maxsize=3)
+
+    def publish(name: str, data: dict) -> None:
+        # Keep only a few recent events if the client is slower than the browser.
+        if events.full():
+            try:
+                events.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            events.put_nowait((name, data))
+        except asyncio.QueueFull:
+            pass
+
+    async def frame_callback(encoded: str) -> None:
+        publish("frame", {"image": f"data:image/jpeg;base64,{encoded}"})
+
+    async def progress_callback(status: dict) -> None:
+        publish("status", status)
+
+    worker = asyncio.create_task(
+        asyncio.wait_for(
+            _execute_plan(plan, frame_callback, progress_callback),
+            timeout=60,
+        )
+    )
+    try:
+        yield _sse_event("status", {"message": "Starting the live browser…"})
+        while not worker.done():
+            try:
+                name, data = await asyncio.wait_for(events.get(), timeout=0.75)
+                yield _sse_event(name, data)
+            except asyncio.TimeoutError:
+                continue
+        while not events.empty():
+            name, data = events.get_nowait()
+            yield _sse_event(name, data)
+        output, completed, page_title, current_url = await worker
+        result = ExecuteResponse(
+            success=True,
+            message="Task completed.",
+            task=payload.task,
+            output=output,
+            steps_completed=completed,
+            page_title=page_title,
+            current_url=current_url,
+        )
+        yield _sse_event("complete", result.model_dump())
+    except asyncio.TimeoutError:
+        yield _sse_event("error", {"message": "The browser task exceeded its time limit."})
+    except ValueError as exc:
+        yield _sse_event("error", {"message": str(exc)})
+    except PlaywrightError:
+        logger.exception("Playwright failed during a live browser task")
+        yield _sse_event("error", {"message": "Browser automation failed."})
+    except Exception:
+        logger.exception("Unexpected error during a live browser task")
+        yield _sse_event("error", {"message": "The browser task failed unexpectedly."})
+    finally:
+        if not worker.done():
+            worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        BROWSER_SEMAPHORE.release()
+
+
+@app.post("/execute/stream", include_in_schema=False)
+async def execute_stream(payload: ExecuteRequest) -> StreamingResponse:
+    """Execute a task and stream screenshot frames as Server-Sent Events."""
+    return StreamingResponse(
+        _execute_stream_events(payload),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
