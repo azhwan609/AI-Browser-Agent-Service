@@ -28,7 +28,7 @@ class LiveStreamTests(unittest.TestCase):
                 response = self.client.get(path)
 
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.text, "V2.7 - Unambiguous Product Actions")
+                self.assertEqual(response.text, "V2.8 - Intent-Scoped Product Actions")
                 self.assertTrue(response.headers["content-type"].startswith("text/plain"))
 
     def test_root_serves_the_frontend_adapter(self):
@@ -341,6 +341,22 @@ class LiveStreamTests(unittest.TestCase):
         )
         self.assertEqual(normalized.steps, [backpack])
 
+    def test_cart_plan_infers_scope_for_single_named_product(self):
+        task = "Add only the Sauce Labs Backpack to the cart once."
+        generic_add = main.BrowserAction(action="click", target="Add", value="")
+
+        self.assertEqual(
+            main._infer_requested_cart_item_title(task), "Sauce Labs Backpack"
+        )
+        normalized = main._normalize_requested_cart_items(
+            main.BrowserPlan(goal="add the requested product", steps=[generic_add]), task
+        )
+        self.assertEqual(normalized.steps[0].value, "Sauce Labs Backpack")
+
+    def test_cart_item_inference_refuses_multiple_requested_products(self):
+        task = "Add Sauce Labs Backpack and Sauce Labs Bike Light to the cart."
+        self.assertIsNone(main._infer_requested_cart_item_title(task))
+
     def test_unscoped_click_locator_rejects_ambiguous_partial_button(self):
         exact_button = MagicMock()
         exact_button.count = AsyncMock(return_value=0)
@@ -372,6 +388,7 @@ class LiveStreamTests(unittest.TestCase):
         self.assertIn("every intermediate transition explicitly", main.SYSTEM_PROMPT)
         self.assertIn("visible Shopping Cart link -> click Checkout", main.SYSTEM_PROMPT)
         self.assertIn("add only products the user explicitly named, once each", main.SYSTEM_PROMPT)
+        self.assertIn("infer that single named title", main.SYSTEM_PROMPT)
         self.assertIn("click.value", main.SYSTEM_PROMPT)
         self.assertIn("target 'page title' (read page.title()", main.SYSTEM_PROMPT)
         self.assertIn("target 'css:h1'", main.SYSTEM_PROMPT)

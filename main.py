@@ -30,7 +30,7 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 12
 MAX_EXTRACT_CHARS = 4_000
-VERSION_TAG = "V2.7 - Unambiguous Product Actions"
+VERSION_TAG = "V2.8 - Intent-Scoped Product Actions"
 BROWSER_ACTION_RE = re.compile(
     r"\b(?:go\s+to|navigate(?:\s+to)?|visit|browse(?:\s+to)?|click|fill|"
     r"type\s+(?:into|in)|enter\s+(?:into|in)|submit|extract|scrape|"
@@ -160,6 +160,44 @@ def _enforce_requested_extraction(plan: BrowserPlan, task: str) -> BrowserPlan:
     return plan.model_copy(update={"steps": steps})
 
 
+def _infer_requested_cart_item_title(task: str) -> str | None:
+    """Infer one product title only when the user's wording names a single cart item."""
+    if re.search(
+        r"\b(?:add|put|place|include)\b.{0,160}(?:\band\b|\bor\b|,|&|\bboth\b).{0,120}\b(?:to|in|into)\s+(?:the\s+)?(?:cart|basket)\b",
+        task,
+        re.IGNORECASE,
+    ):
+        return None
+    patterns = (
+        r"\b(?:add|put|place|include)\s+(?:only\s+)?(?:the\s+)?(.+?)\s+(?:to|in|into)\s+(?:the\s+)?(?:cart|basket)\b",
+        r"\b(?:only|just)\s+(?:add\s+)?(?:the\s+)?(.+?)(?=\s+(?:exactly|once|one\s+time|to|in|into|then|and|before|after)\b|[.!?,;]|$)",
+        r"\b(?:add|put|place)\s+(?:only\s+)?(?:the\s+)?(.+?)(?=\s+(?:exactly|once|one\s+time|then|and|before|after)\b|[.!?,;]|$)",
+        r"(?:فقط|تنها)\s*(?:محصول|کالای)?\s*(.+?)(?=\s*(?:را|دقیقاً|یک\s*بار|به\s*سبد|در\s*سبد|و|،|[.!؟]|$))",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, task, re.IGNORECASE)
+        if not match:
+            continue
+        candidate = " ".join(match.group(1).strip(" \t\r\n.,;:!؟،\"'“”‘’").split())
+        candidate = re.sub(
+            r"^(?:(?:only|just|the|product|item)\s+)+", "", candidate, flags=re.IGNORECASE
+        )
+        candidate = re.sub(
+            r"\s+(?:exactly\s+)?(?:once|one\s+time|one\s+each|only|just)$",
+            "",
+            candidate,
+            flags=re.IGNORECASE,
+        ).strip()
+        if not candidate or len(candidate) > 100:
+            continue
+        if re.search(r"\b(?:and|or|also|another|both)\b|[,&;]", candidate, re.IGNORECASE):
+            return None
+        if not re.search(r"[^\W_]{2,}", candidate, re.UNICODE):
+            continue
+        return candidate
+    return None
+
+
 def _is_cart_add_action(step: BrowserAction, task: str) -> bool:
     if step.action != "click":
         return False
@@ -167,7 +205,10 @@ def _is_cart_add_action(step: BrowserAction, task: str) -> bool:
         return True
     return bool(
         re.fullmatch(r"add(?:\s+to)?", step.target.strip(), re.IGNORECASE)
-        and re.search(r"\b(?:cart|basket)\b|سبد\s*خرید", task, re.IGNORECASE)
+        and (
+            re.search(r"\b(?:cart|basket)\b|سبد\s*خرید", task, re.IGNORECASE)
+            or _infer_requested_cart_item_title(task) is not None
+        )
     )
 
 
@@ -175,9 +216,11 @@ def _normalize_requested_cart_items(plan: BrowserPlan, task: str) -> BrowserPlan
     """Keep only unique, explicitly requested product additions in a browser plan."""
     task_tokens = set(re.findall(r"[^\W_]+", task.casefold(), flags=re.UNICODE))
     generic_tokens = {"sauce", "labs", "add", "to", "cart", "basket", "product", "item", "the", "a", "an"}
+    inferred_title = _infer_requested_cart_item_title(task)
     added_items: set[frozenset[str]] = set()
     normalized_steps: list[BrowserAction] = []
     skipped_additions = 0
+    modified = False
 
     for step in plan.steps:
         if not _is_cart_add_action(step, task):
@@ -185,8 +228,13 @@ def _normalize_requested_cart_items(plan: BrowserPlan, task: str) -> BrowserPlan
             continue
         title = " ".join(step.value.split())
         if not title:
-            normalized_steps.append(step)
-            continue  # The executor rejects ambiguous repeated buttons on the page.
+            if inferred_title:
+                title = inferred_title
+                step = step.model_copy(update={"value": title})
+                modified = True
+            else:
+                normalized_steps.append(step)
+                continue  # No single requested item can safely scope this repeated control.
         item_tokens = {
             token
             for token in re.findall(r"[^\W_]+", title.casefold(), flags=re.UNICODE)
@@ -210,6 +258,7 @@ def _normalize_requested_cart_items(plan: BrowserPlan, task: str) -> BrowserPlan
         raise ValueError("I couldn't safely match the requested product to an add-to-cart action.")
     if skipped_additions:
         logger.info("Removed %s unrelated or duplicate cart action(s) from the browser plan", skipped_additions)
+    if skipped_additions or modified:
         return plan.model_copy(update={"steps": normalized_steps})
     return plan
 
@@ -284,8 +333,11 @@ Persian actions while preserving the same destination and safety rules.
 
 When shopping, add only products the user explicitly named, once each. If a
 repeated control such as 'Add to cart' belongs to one of several products, put
-the exact product title in click.value so the action is scoped to that product;
-never click an unscoped duplicate add-to-cart control.
+the exact product title in click.value so the action is scoped to that product.
+If the user clearly names exactly one product but the step's target is merely
+'Add' and click.value is blank, let the executor infer that single named title
+from the user's task and scope the control to its product card. Never guess among
+multiple products or click an unscoped duplicate add-to-cart control.
 
 For multi-page workflows, include every intermediate transition explicitly;
 never try to use a control on a later page before a step has reached that page.

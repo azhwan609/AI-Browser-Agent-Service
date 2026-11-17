@@ -4,7 +4,7 @@ A FastAPI service with a single-page chat frontend and a Groq-planned, safety-co
 
 - `GET /` serves `manus-obtima.html`.
 - `GET /profiles` serves the same frontend with its account-profile screen selected.
-- `GET /version` returns the deployment fingerprint `V2.7 - Unambiguous Product Actions`; `GET /execute` remains a compatibility alias.
+- `GET /version` returns the deployment fingerprint `V2.8 - Intent-Scoped Product Actions`; `GET /execute` remains a compatibility alias.
 - `POST /execute` accepts `{"task":"..."}` and returns the JSON response format.
 - `POST /execute/stream` accepts the same payload and streams named Server-Sent Events (`status`, `frame`, `complete`, `error`). Frames are Base64 JPEGs in `data:image/jpeg;base64,...` form. The live-browser panel opens only for browser tasks; ordinary chat returns text without a browser panel.
 - The default Groq model is `openai/gpt-oss-20b`; set `GROQ_MODEL` to another active model if needed. Set `GROQ_API_KEY` as a secret environment variable in Render. Never commit the key or put it in the HTML.
