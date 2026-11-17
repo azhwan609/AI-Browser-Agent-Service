@@ -26,6 +26,19 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("function positionPanel()", self.html)
         self.assertIn("composer.getBoundingClientRect()", self.html)
 
+    def test_account_profiles_are_a_clear_ui_only_preview(self):
+        self.assertIn('@app.get("/profiles"', self.backend)
+        self.assertIn('id="metal-appbar"', self.html)
+        self.assertIn('href="/profiles" data-app-route="profiles"', self.html)
+        self.assertIn('id="profile-page"', self.html)
+        self.assertIn('data-profile-preview="Google"', self.html)
+        self.assertIn('data-profile-preview="GitHub"', self.html)
+        self.assertIn("No passwords are requested or stored.", self.html)
+        self.assertIn("Account linking is not active in this preview.", self.html)
+        profile_markup = self.html.split('id="profile-page"', 1)[1].split("</section>", 1)[0]
+        self.assertNotIn('type="password"', profile_markup)
+        self.assertNotIn("/auth/oauth", self.backend)
+
     def test_browser_execution_requires_headed_chromium_and_hides_steps(self):
         self.assertIn("headless=False", self.backend)
         self.assertIn("Display(visible=False", self.backend)

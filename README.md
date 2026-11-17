@@ -3,10 +3,15 @@
 A FastAPI service with a single-page chat frontend and a Groq-planned, safety-constrained Playwright browser agent.
 
 - `GET /` serves `manus-obtima.html`.
+- `GET /profiles` serves the same frontend with its account-profile screen selected.
 - `GET /version` returns the deployment fingerprint `V2.0 - Chat Routing Active`; `GET /execute` remains a compatibility alias.
 - `POST /execute` accepts `{"task":"..."}` and returns the JSON response format.
 - `POST /execute/stream` accepts the same payload and streams named Server-Sent Events (`status`, `frame`, `complete`, `error`). Frames are Base64 JPEGs in `data:image/jpeg;base64,...` form. The live-browser panel opens only for browser tasks; ordinary chat returns text without a browser panel.
 - The default Groq model is `openai/gpt-oss-20b`; set `GROQ_MODEL` to another active model if needed. Set `GROQ_API_KEY` as a secret environment variable in Render. Never commit the key or put it in the HTML.
+
+## Account profiles
+
+The metallic top navigation includes an account-profile screen with Google and GitHub provider cards. This is a UI-only preview: OAuth is not configured, the Connect buttons only explain that limitation, and no credentials or account data are collected or stored. Connecting an identity provider would require a separate OAuth setup and persistent datastore; provider OAuth does not create a universal login session for unrelated websites.
 
 The agent does not execute model-generated code. It runs at most six allowlisted actions in a fresh anonymous browser context. It can navigate public HTTP(S) pages, click visible links and standard form controls, fill enabled standard text/search/URL/email/password fields with values explicitly supplied by the user, and extract page titles, visible text, and bounded CSS-selected text. Standard form actions are allowed when explicitly requested; the planner is instructed not to perform purchases/payments, bookings, deletion, sending, or account changes unless specifically requested. Private/local destinations are blocked both before navigation and by a connection-time proxy that resolves the destination and pins the connection to a verified public IP. Downloads and file attachments are not supported.
 

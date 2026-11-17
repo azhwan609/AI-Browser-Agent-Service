@@ -254,6 +254,12 @@ async def serve_frontend() -> FileResponse:
     return FileResponse(FRONTEND_FILE, media_type="text/html; charset=utf-8")
 
 
+@app.get("/profiles", include_in_schema=False)
+async def serve_profiles() -> FileResponse:
+    """Serve the account-profile UI preview; no account data is collected."""
+    return await serve_frontend()
+
+
 def _generate_plan_sync(task: str, api_key: str, model: str) -> BrowserPlan:
     """Ask Groq for schema-constrained JSON, then validate it again locally."""
     client = Groq(api_key=api_key, timeout=40.0, max_retries=1)

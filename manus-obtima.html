@@ -597,8 +597,71 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
   @media(max-width:600px){.dock{flex-wrap:wrap;justify-content:center;gap:5px;padding:6px}}
   @media(prefers-reduced-motion:reduce){.msg.assistant.pending,.msg.assistant.pending::after{animation:none}}
 </style>
+<style id="profile-preview-styles">
+  #metal-appbar{position:sticky;top:0;z-index:10020;isolation:isolate;display:flex;align-items:center;gap:clamp(8px,1.5vw,22px);box-sizing:border-box;width:min(1240px,calc(100% - 32px));min-height:54px;margin:12px auto 5px;padding:5px 15px 5px 13px;border:1px solid rgba(225,225,225,.35);border-radius:8px;background:linear-gradient(180deg,#555 0,#d5d5d2 2px,#777 3px,#222 7px,#0a0a0b 47%,#111 82%,#7e7e7c 96%,#e5e5e2 99%,#343434 100%);box-shadow:0 8px 26px rgba(0,0,0,.56),inset 0 1px 0 rgba(255,255,255,.38),inset 0 -1px 0 rgba(255,255,255,.12);}
+  #metal-appbar:before{content:"";position:absolute;z-index:-1;inset:4px 8px;border-radius:5px;background:linear-gradient(100deg,rgba(255,255,255,.08),transparent 22%,rgba(255,255,255,.025) 60%,transparent);pointer-events:none}
+  .metal-brand{display:flex;align-items:center;gap:12px;flex:0 0 auto;min-width:160px;color:#e8e8e5;text-decoration:none}
+  .metal-diamond{position:relative;display:grid;place-items:center;width:31px;height:31px;flex:none;transform:rotate(45deg);border:1px solid #eee;border-radius:2px;background:linear-gradient(135deg,#f8f8f5 0%,#777 22%,#171718 47%,#d7d7d4 73%,#313132 100%);box-shadow:0 0 0 2px rgba(255,255,255,.19),0 0 15px rgba(222,222,216,.18)}
+  .metal-diamond:after{content:"";width:17px;height:17px;border:1px solid rgba(255,255,255,.7);background:linear-gradient(140deg,#fff,#878786 48%,#29292a);box-shadow:inset 0 0 6px rgba(255,255,255,.35)}
+  .metal-brand-copy{display:flex;flex-direction:column;gap:1px;line-height:1.05}.metal-brand-title{font-size:10px;font-weight:800;letter-spacing:.19em;color:#f1f0ed}.metal-brand-subtitle{font-size:7px;letter-spacing:.25em;color:#8d8d8b;text-transform:uppercase}
+  .metal-nav-links{display:flex;align-items:center;gap:4px;min-width:0;flex:1}
+  .metal-nav-link,.metal-nav-action{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:34px;padding:0 11px;border:1px solid transparent;border-radius:5px;background:transparent;color:#aaa9a6;text-decoration:none;font:600 10px/1 system-ui,sans-serif;letter-spacing:.09em;text-transform:uppercase;white-space:nowrap;cursor:pointer;transition:color .16s ease,border-color .16s ease,background .16s ease,box-shadow .16s ease}
+  .metal-nav-link svg,.metal-nav-action svg{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+  .metal-nav-link:hover,.metal-nav-action:hover{color:#f5f4ef;border-color:rgba(220,220,215,.19);background:rgba(255,255,255,.055)}
+  .metal-nav-link[aria-current="page"]{color:#f4f2ed;border-color:rgba(220,220,215,.29);background:linear-gradient(180deg,rgba(255,255,255,.12),rgba(255,255,255,.035));box-shadow:inset 0 1px rgba(255,255,255,.09),0 0 12px rgba(255,255,255,.035)}
+  .metal-nav-link:focus-visible,.metal-nav-action:focus-visible,.profile-connect:focus-visible{outline:2px solid #e2e2de;outline-offset:2px}
+  .metal-nav-status{display:flex;align-items:center;gap:7px;flex:none;margin-left:auto;padding-left:12px;border-left:1px solid rgba(255,255,255,.12);color:#959592;font:700 8px/1 system-ui,sans-serif;letter-spacing:.16em;white-space:nowrap}
+  .metal-nav-status-dot{width:6px;height:6px;border-radius:50%;background:#c6c6c2;box-shadow:0 0 8px rgba(240,240,230,.45)}
+  .profile-page[hidden]{display:none!important}
+  body.profiles-mode .hl,body.profiles-mode .toprow,body.profiles-mode main#chat,body.profiles-mode .composer-wrap{display:none!important}
+  body.profiles-mode #profile-page:not([hidden]){display:block;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+  .profile-shell{box-sizing:border-box;width:min(1040px,100%);margin:0 auto;padding:clamp(24px,5vw,60px) clamp(16px,4vw,36px) 42px;color:#eee9de}
+  .profile-eyebrow{display:inline-flex;align-items:center;gap:8px;margin-bottom:12px;color:#bcbab3;font:750 9px/1.3 system-ui,sans-serif;letter-spacing:.2em;text-transform:uppercase}
+  .profile-eyebrow:before{content:"";width:18px;height:1px;background:linear-gradient(90deg,#f1f1ed,transparent)}
+  .profile-title{margin:0;color:#f4f1e9;font:650 clamp(25px,4vw,38px)/1.14 system-ui,sans-serif;letter-spacing:-.035em}
+  .profile-intro{max-width:670px;margin:13px 0 0;color:#b7b4ac;font:400 13px/1.7 system-ui,sans-serif}
+  .profile-security-note{display:flex;align-items:flex-start;gap:12px;margin:24px 0 25px;padding:15px 17px;border:1px solid rgba(221,221,213,.19);border-radius:10px;background:linear-gradient(110deg,rgba(255,255,255,.07),rgba(255,255,255,.018));color:#d7d4cc;font:400 11px/1.65 system-ui,sans-serif}
+  .profile-security-icon{display:grid;place-items:center;width:23px;height:23px;flex:none;border:1px solid rgba(231,231,225,.24);border-radius:7px;color:#e4e3df}.profile-security-icon svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  .profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+  .profile-card{position:relative;display:flex;flex-direction:column;min-height:235px;padding:19px;border:1px solid rgba(222,222,216,.16);border-radius:12px;background:linear-gradient(150deg,rgba(31,31,32,.96),rgba(11,11,12,.98));box-shadow:0 12px 35px rgba(0,0,0,.26),inset 0 1px rgba(255,255,255,.04)}
+  .profile-card-top{display:flex;align-items:center;justify-content:space-between;gap:12px}.profile-provider-logo{display:grid;place-items:center;width:39px;height:39px;border:1px solid rgba(255,255,255,.12);border-radius:11px;background:rgba(255,255,255,.045)}.profile-provider-logo svg{width:21px;height:21px}.profile-state{display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid rgba(227,198,142,.2);border-radius:999px;color:#c7b385;font:700 8px/1 system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}.profile-state:before{content:"";width:5px;height:5px;border-radius:50%;background:#d2b97e}
+  .profile-card h2{margin:20px 0 6px;color:#f3f1ec;font:650 16px/1.25 system-ui,sans-serif}.profile-card p{margin:0;color:#aaa8a1;font:400 11px/1.6 system-ui,sans-serif}.profile-card .profile-scope{margin-top:10px;color:#888782;font-size:9px}
+  .profile-connect{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:37px;margin-top:auto;padding:8px 12px;border:1px solid rgba(229,229,223,.24);border-radius:7px;background:linear-gradient(180deg,rgba(255,255,255,.13),rgba(255,255,255,.05));color:#e8e7e2;font:650 10px/1.1 system-ui,sans-serif;letter-spacing:.04em;cursor:pointer;transition:background .15s ease,border-color .15s ease}
+  .profile-connect:hover{border-color:rgba(255,255,255,.42);background:rgba(255,255,255,.13)}.profile-connect[disabled]{opacity:.54;cursor:not-allowed}
+  .profile-later{margin-top:22px;padding-top:18px;border-top:1px solid rgba(255,255,255,.09);color:#8d8c87;font:400 10px/1.7 system-ui,sans-serif}
+  #profile-toast{position:fixed;z-index:11000;left:50%;bottom:24px;transform:translate(-50%,14px);max-width:min(520px,calc(100vw - 28px));padding:12px 16px;border:1px solid rgba(231,231,224,.28);border-radius:9px;background:rgba(17,17,18,.97);box-shadow:0 12px 36px rgba(0,0,0,.45);color:#eeede8;font:500 11px/1.5 system-ui,sans-serif;opacity:0;pointer-events:none;transition:opacity .18s ease,transform .18s ease}
+  #profile-toast.visible{opacity:1;transform:translate(-50%,0)}
+  @media(max-width:760px){.profile-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.metal-brand{min-width:auto}.metal-nav-status{padding-left:8px}}
+  @media(max-width:560px){#metal-appbar{width:calc(100% - 16px);min-height:48px;margin:8px auto 4px;padding:4px 8px;gap:6px}.metal-brand{gap:9px}.metal-diamond{width:25px;height:25px}.metal-diamond:after{width:13px;height:13px}.metal-brand-title{font-size:8px}.metal-brand-subtitle{font-size:6px}.metal-nav-links{gap:1px}.metal-nav-link,.metal-nav-action{min-height:32px;padding:0 8px;gap:0}.metal-nav-label{display:none}.metal-nav-link svg,.metal-nav-action svg{width:15px;height:15px}.metal-nav-status{font-size:7px;letter-spacing:.09em;padding-left:7px}.profile-grid{grid-template-columns:1fr}.profile-card{min-height:210px}.profile-shell{padding-top:26px}}
+  @media(max-width:380px){.metal-brand-subtitle,.metal-nav-status-label{display:none}.metal-brand{gap:7px}.metal-nav-status{border-left:0;padding-left:0}}
+  @media(prefers-reduced-motion:reduce){.metal-nav-link,.metal-nav-action,#profile-toast{transition:none}}
+</style>
+
 </head>
 <body>
+
+<nav id="metal-appbar" aria-label="Primary navigation">
+  <a class="metal-brand" href="/" data-app-route="agent" aria-label="AI Browser Agent home">
+    <span class="metal-diamond" aria-hidden="true"></span>
+    <span class="metal-brand-copy"><span class="metal-brand-title">SHIWA AI</span><span class="metal-brand-subtitle">Browser agent</span></span>
+  </a>
+  <div class="metal-nav-links">
+    <a class="metal-nav-link" href="/" data-app-route="agent" aria-label="Agent" title="Agent">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 14 9l5.5 2-5.5 2-2 5.5L10 13l-5.5-2L10 9l2-5.5Z"/><path d="m19 15 .9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15Z"/></svg><span class="metal-nav-label">Agent</span>
+    </a>
+    <button class="metal-nav-action" type="button" data-app-command="live" aria-label="Live browser" title="Live browser">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4m-4-9 3-3 2 2 3-4"/></svg><span class="metal-nav-label">Live</span>
+    </button>
+    <a class="metal-nav-link" href="/profiles" data-app-route="profiles" aria-label="Account profiles" title="Account profiles">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.5-3.2 2.4-4.8 5.5-4.8s5 1.6 5.5 4.8M16 5.5a3 3 0 0 1 0 5.8m1.2 3c2.1.5 3.2 2 3.5 4.7"/></svg><span class="metal-nav-label">Profiles</span>
+    </a>
+    <button class="metal-nav-action" type="button" data-app-command="activity" aria-label="Activity" title="Activity">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.2 2"/></svg><span class="metal-nav-label">Activity</span>
+    </button>
+  </div>
+  <span class="metal-nav-status"><span class="metal-nav-status-dot" aria-hidden="true"></span><span class="metal-nav-status-label">UI PREVIEW</span></span>
+</nav>
+
 
 <header>
   <div class="hl">
@@ -632,6 +695,38 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
         <svg viewBox="0 0 24 24"><path d="M12 6.5C10 5 7 4.5 3.5 5v13c3.5-.5 6.5 0 8.5 1.5 2-1.5 5-2 8.5-1.5V5C17 4.5 14 5 12 6.5z"/><path d="M12 6.5v13"/></svg>
       </button>
     </div>
+
+
+<section id="profile-page" class="profile-page" hidden aria-labelledby="profile-title">
+  <div class="profile-shell">
+    <div class="profile-eyebrow">Account center · preview</div>
+    <h1 class="profile-title" id="profile-title">Account profiles</h1>
+    <p class="profile-intro">Manage the identity providers that could be linked to your agent account. Connections are not active in this preview.</p>
+    <div class="profile-security-note" role="note">
+      <span class="profile-security-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg></span>
+      <span><strong>No passwords are requested or stored.</strong> This screen is a UI preview only. Google/GitHub OAuth has not been configured, so profile linking and sign-in are not yet enabled. Provider authorization would apply only to explicitly approved features—not act as a universal login to unrelated websites.</span>
+    </div>
+    <div class="profile-grid" aria-label="Available account providers">
+      <article class="profile-card">
+        <div class="profile-card-top"><span class="profile-provider-logo" aria-label="Google logo"><svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.6c3.9-3.6 6.1-8.9 6.1-15Z"/><path fill="#34A853" d="M24 44c5.5 0 10.1-1.8 13.5-4.9l-6.6-5.1c-1.8 1.2-4.1 2-6.9 2-5.3 0-9.8-3.6-11.4-8.4H5.8v5.3C9.2 39.6 16 44 24 44Z"/><path fill="#FBBC05" d="M12.6 27.6a12 12 0 0 1 0-7.2v-5.3H5.8a20 20 0 0 0 0 17.8l6.8-5.3Z"/><path fill="#EA4335" d="M24 12c3 0 5.6 1 7.7 3l5.8-5.8C34 5.8 29.5 4 24 4 16 4 9.2 8.4 5.8 15.1l6.8 5.3C14.2 15.6 18.7 12 24 12Z"/></svg></span><span class="profile-state">Not connected</span></div>
+        <h2>Google</h2><p>Sign-in profile connection is not configured yet.</p><p class="profile-scope">Identity only · no access granted</p>
+        <button class="profile-connect" type="button" data-profile-preview="Google">Connect Google</button>
+      </article>
+      <article class="profile-card">
+        <div class="profile-card-top"><span class="profile-provider-logo" aria-label="GitHub logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#eee" d="M12 .9a11.1 11.1 0 0 0-3.5 21.6c.6.1.8-.2.8-.6v-2.1c-3.1.7-3.8-1.3-3.8-1.3-.5-1.3-1.2-1.6-1.2-1.6-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.5 1.2 3.2.9.1-.7.4-1.2.7-1.5-2.5-.3-5.1-1.2-5.1-5.5 0-1.2.4-2.2 1.2-3-.1-.3-.5-1.4.1-3 0 0 1-.3 3.1 1.2a10.6 10.6 0 0 1 5.6 0c2.1-1.5 3.1-1.2 3.1-1.2.6 1.6.2 2.7.1 3 .8.8 1.2 1.8 1.2 3 0 4.3-2.6 5.2-5.1 5.5.4.3.8 1 .8 2v3c0 .4.2.7.8.6A11.1 11.1 0 0 0 12 .9Z"/></svg></span><span class="profile-state">Not connected</span></div>
+        <h2>GitHub</h2><p>Sign-in profile connection is not configured yet.</p><p class="profile-scope">Identity only · no access granted</p>
+        <button class="profile-connect" type="button" data-profile-preview="GitHub">Connect GitHub</button>
+      </article>
+      <article class="profile-card">
+        <div class="profile-card-top"><span class="profile-provider-logo" aria-label="More providers"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="#ddd" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v8m-4-4h8"/></svg></span><span class="profile-state">Coming soon</span></div>
+        <h2>More providers</h2><p>Additional identity options can be added after OAuth is configured.</p><p class="profile-scope">No accounts connected</p>
+        <button class="profile-connect" type="button" data-profile-preview="additional providers">View setup status</button>
+      </article>
+    </div>
+    <p class="profile-later">When account linking is enabled, each provider will open its official consent page. You will choose whether to approve the requested access; this preview does not initiate a sign-in or collect credentials.</p>
+  </div>
+</section>
+<div id="profile-toast" role="status" aria-live="polite" hidden></div>
 
 <main id="chat" aria-live="polite"></main>
 
@@ -906,5 +1001,49 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     }
   });
 })();</script>
+<script id="profile-preview-router">
+(function(){
+  const page=document.getElementById('profile-page');
+  const toast=document.getElementById('profile-toast');
+  if(!page||!toast)return;
+  let toastTimer;
+  function isProfiles(){return window.location.pathname.replace(/\/+$/,'')==='/profiles'}
+  function render(){
+    const active=isProfiles();
+    document.body.classList.toggle('profiles-mode',active);
+    page.hidden=!active;
+    document.querySelectorAll('[data-app-route]').forEach(function(link){
+      const selected=(link.dataset.appRoute==='profiles')===active;
+      if(selected)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');
+    });
+    if(active){const live=document.querySelector('.live-browser-panel');if(live)live.hidden=true;}
+  }
+  function showNotice(message){
+    toast.textContent=message;toast.hidden=false;toast.classList.add('visible');
+    window.clearTimeout(toastTimer);toastTimer=window.setTimeout(function(){toast.classList.remove('visible');window.setTimeout(function(){toast.hidden=true},220)},3200);
+  }
+  document.addEventListener('click',function(event){
+    const route=event.target.closest('[data-app-route]');
+    if(route){
+      const target=route.dataset.appRoute==='profiles'?'/profiles':'/';
+      if(event.button===0&&!event.metaKey&&!event.ctrlKey&&!event.shiftKey&&!event.altKey){event.preventDefault();if(window.location.pathname!==target)history.pushState({},'',target);render();if(target==='/'){const area=document.querySelector('textarea[aria-label="Prompt"]');if(area)setTimeout(function(){area.focus({preventScroll:true})},0);}}
+      return;
+    }
+    const provider=event.target.closest('[data-profile-preview]');
+    if(provider){showNotice('Account linking is not active in this preview. No credentials were requested or saved.');return;}
+    const command=event.target.closest('[data-app-command]');
+    if(command&&command.dataset.appCommand==='live'){
+      const panel=document.querySelector('.live-browser-panel');
+      if(panel&&!panel.hidden){panel.scrollIntoView({behavior:'smooth',block:'center'});}
+      else showNotice('The live browser appears when you run a browser task from the Agent page.');
+    } else if(command&&command.dataset.appCommand==='activity'){
+      showNotice('Activity history is not enabled in this UI preview.');
+    }
+  });
+  window.addEventListener('popstate',render);
+  render();
+})();
+</script>
+
 </body>
 </html>
