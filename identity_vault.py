@@ -1,9 +1,9 @@
-"""Encrypted, file-backed browser identity vault.
+"""Encrypted, fail-safe browser identity vault.
 
-The vault never stores passwords. It stores only profile metadata and encrypted
-Playwright storage_state snapshots. Production deployments must provide
-IDENTITY_VAULT_KEY and a persistent IDENTITY_VAULT_DIR (for example a Render
-persistent disk or external mounted volume).
+The vault stores profile metadata in SQLite and Playwright storage_state snapshots
+as Fernet-encrypted files. In production, IDENTITY_VAULT_DIR must be backed by a
+real persistent mount and REQUIRE_PERSISTENT_STORAGE must be true. There is no
+ephemeral-storage fallback.
 """
 
 from __future__ import annotations
@@ -21,12 +21,26 @@ from typing import Any, Iterator
 from cryptography.fernet import Fernet, InvalidToken
 
 
+SESSION_STATUSES = {
+    "session_created",
+    "session_saved",
+    "session_restored",
+    "session_expired",
+    "session_invalid",
+    "session_recovery_failed",
+    "not_connected",
+}
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def _safe_id(value: str) -> str:
-    if not value or len(value) > 80 or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for ch in value):
+    if not value or len(value) > 80 or any(
+        ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+        for ch in value
+    ):
         raise ValueError("Invalid profile identifier")
     return value
 
@@ -39,7 +53,8 @@ class IdentityVault:
     """SQLite metadata plus Fernet-encrypted state snapshots."""
 
     def __init__(self, root: str | Path | None = None, key: str | None = None) -> None:
-        self.root = Path(root or os.getenv("IDENTITY_VAULT_DIR", "/var/data/identity-vault"))
+        configured_root = root or os.getenv("IDENTITY_VAULT_DIR", "/var/data/identity-vault")
+        self.root = Path(configured_root).expanduser()
         raw_key = key or os.getenv("IDENTITY_VAULT_KEY", "").strip()
         if not raw_key:
             raise VaultUnavailable("Identity Vault is not configured.")
@@ -47,9 +62,34 @@ class IdentityVault:
             self._fernet = Fernet(raw_key.encode("ascii"))
         except Exception as exc:
             raise VaultUnavailable("IDENTITY_VAULT_KEY is invalid.") from exc
-        self.root.mkdir(parents=True, exist_ok=True)
+        self._require_persistent = os.getenv("REQUIRE_PERSISTENT_STORAGE", "false").lower() == "true"
+        self._prepare_storage()
         self._db_path = self.root / "vault.sqlite3"
         self._init_db()
+
+    def _prepare_storage(self) -> None:
+        if self.root.is_absolute() is False:
+            raise VaultUnavailable("IDENTITY_VAULT_DIR must be an absolute path.")
+        if self._require_persistent:
+            mount = Path(os.getenv("PERSISTENT_STORAGE_MOUNT", "/var/data")).expanduser()
+            if not mount.is_absolute() or not mount.exists() or not os.path.ismount(mount):
+                raise VaultUnavailable("Persistent Identity Vault storage is not mounted.")
+            try:
+                self.root.resolve().relative_to(mount.resolve())
+            except ValueError as exc:
+                raise VaultUnavailable("Identity Vault path is outside the persistent mount.") from exc
+        try:
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not os.access(self.root, os.W_OK | os.X_OK):
+                raise OSError("storage directory is not writable")
+            marker = self.root / ".identity-vault-marker"
+            if not marker.exists():
+                marker.write_text("identity-vault\n", encoding="ascii")
+                os.chmod(marker, 0o600)
+                with marker.open("rb") as handle:
+                    os.fsync(handle.fileno())
+        except OSError as exc:
+            raise VaultUnavailable("Identity Vault storage is unavailable or not writable.") from exc
 
     @contextmanager
     def _db(self) -> Iterator[sqlite3.Connection]:
@@ -73,7 +113,7 @@ class IdentityVault:
                     account_email TEXT,
                     is_default INTEGER NOT NULL DEFAULT 0,
                     auto_reuse INTEGER NOT NULL DEFAULT 1,
-                    auth_status TEXT NOT NULL DEFAULT 'not_connected',
+                    auth_status TEXT NOT NULL DEFAULT 'session_created',
                     last_successful_auth TEXT,
                     last_activity TEXT,
                     session_expires_at TEXT,
@@ -84,7 +124,18 @@ class IdentityVault:
                 """
             )
 
+    def _set_status(self, owner_id: str, profile_id: str, status: str) -> None:
+        if status not in SESSION_STATUSES:
+            raise ValueError("Invalid session status")
+        with self._db() as conn:
+            conn.execute(
+                "UPDATE profiles SET auth_status=?, last_activity=? WHERE owner_id=? AND id=?",
+                (status, utc_now(), owner_id, profile_id),
+            )
+
     def _profile_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        state_path = Path(row["state_path"]) if row["state_path"] else None
+        state_present = bool(state_path and state_path.is_file())
         return {
             "id": row["id"],
             "name": row["name"],
@@ -95,7 +146,7 @@ class IdentityVault:
             "last_successful_auth": row["last_successful_auth"],
             "last_activity": row["last_activity"],
             "session_expires_at": row["session_expires_at"],
-            "has_saved_session": bool(row["state_path"]),
+            "has_saved_session": state_present,
             "created_at": row["created_at"],
         }
 
@@ -110,8 +161,8 @@ class IdentityVault:
             count = conn.execute("SELECT COUNT(*) FROM profiles WHERE owner_id = ?", (owner_id,)).fetchone()[0]
             is_default = int(count == 0)
             conn.execute(
-                "INSERT INTO profiles(id,owner_id,name,is_default,auto_reuse,created_at) VALUES(?,?,?,?,?,?)",
-                (profile_id, owner_id, name, is_default, int(auto_reuse), now),
+                "INSERT INTO profiles(id,owner_id,name,is_default,auto_reuse,auth_status,created_at) VALUES(?,?,?,?,?,?,?)",
+                (profile_id, owner_id, name, is_default, int(auto_reuse), "session_created", now),
             )
         return self.get_profile(owner_id, profile_id)
 
@@ -141,9 +192,11 @@ class IdentityVault:
             name = name.strip()[:100]
             if not name:
                 raise ValueError("Profile name is required")
-            updates.append("name = ?"); values.append(name)
+            updates.append("name = ?")
+            values.append(name)
         if auto_reuse is not None:
-            updates.append("auto_reuse = ?"); values.append(int(auto_reuse))
+            updates.append("auto_reuse = ?")
+            values.append(int(auto_reuse))
         if updates:
             values.extend([owner_id, profile_id])
             with self._db() as conn:
@@ -170,9 +223,14 @@ class IdentityVault:
             Path(row["state_path"]).unlink(missing_ok=True)
         with self._db() as conn:
             conn.execute(
-                "UPDATE profiles SET account_email=NULL, auth_status='not_connected', last_successful_auth=NULL, session_expires_at=NULL, state_path=NULL WHERE owner_id=? AND id=?",
+                "UPDATE profiles SET account_email=NULL, auth_status='session_invalid', last_successful_auth=NULL, session_expires_at=NULL, state_path=NULL WHERE owner_id=? AND id=?",
                 (owner_id, profile_id),
             )
+        return self.get_profile(owner_id, profile_id)
+
+    def mark_expired(self, owner_id: str, profile_id: str) -> dict[str, Any]:
+        self._row(owner_id, profile_id)
+        self._set_status(owner_id, profile_id, "session_expired")
         return self.get_profile(owner_id, profile_id)
 
     def save_storage_state(self, owner_id: str, profile_id: str, state: dict[str, Any], *, account_email: str | None = None) -> dict[str, Any]:
@@ -182,8 +240,10 @@ class IdentityVault:
         state_dir = self.root / "states"
         state_dir.mkdir(mode=0o700, exist_ok=True)
         path = state_dir / f"{row['id']}.bin"
-        path.write_bytes(token)
-        os.chmod(path, 0o600)
+        tmp = state_dir / f".{row['id']}.tmp"
+        tmp.write_bytes(token)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
         now = utc_now()
         with self._db() as conn:
             conn.execute(
@@ -194,14 +254,22 @@ class IdentityVault:
 
     def load_storage_state(self, owner_id: str, profile_id: str) -> dict[str, Any] | None:
         row = self._row(owner_id, profile_id)
-        path = row["state_path"]
-        if not path:
+        path_value = row["state_path"]
+        if not path_value:
+            self._set_status(owner_id, profile_id, "session_invalid")
             return None
+        path = Path(path_value)
         try:
-            raw = self._fernet.decrypt(Path(path).read_bytes())
-            return json.loads(raw.decode("utf-8"))
-        except (OSError, InvalidToken, json.JSONDecodeError) as exc:
+            path.resolve().relative_to(self.root.resolve())
+            raw = self._fernet.decrypt(path.read_bytes())
+            state = json.loads(raw.decode("utf-8"))
+            if not isinstance(state, dict):
+                raise ValueError("storage state must be an object")
+        except (OSError, InvalidToken, json.JSONDecodeError, ValueError) as exc:
+            self._set_status(owner_id, profile_id, "session_recovery_failed")
             raise VaultUnavailable("Saved browser session could not be restored safely.") from exc
+        self._set_status(owner_id, profile_id, "session_restored")
+        return state
 
     def touch_activity(self, owner_id: str, profile_id: str) -> None:
         self._row(owner_id, profile_id)

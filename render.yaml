@@ -19,3 +19,7 @@ services:
         sync: false
       - key: PROFILE_ADMIN_KEY
         sync: false
+      - key: PERSISTENT_STORAGE_MOUNT
+        value: /var/data
+      - key: REQUIRE_PERSISTENT_STORAGE
+        value: "true"
