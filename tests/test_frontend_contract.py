@@ -39,6 +39,11 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn('type="password"', profile_markup)
         self.assertNotIn("/auth/oauth", self.backend)
 
+    def test_mobile_top_controls_are_shifted_up_and_compact(self):
+        self.assertIn("min-height:44px;margin:2px auto 2px", self.html)
+        self.assertIn("header{height:58px", self.html)
+        self.assertIn(".toprow{padding:7px 10px}", self.html)
+
     def test_browser_execution_requires_headed_chromium_and_hides_steps(self):
         self.assertIn("headless=False", self.backend)
         self.assertIn("Display(visible=False", self.backend)
