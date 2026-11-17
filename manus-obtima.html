@@ -637,6 +637,18 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
   @media(prefers-reduced-motion:reduce){.metal-nav-link,.metal-nav-action,#profile-toast{transition:none}}
   /* Mobile layout: remove excess top offset and anchor the composer at the viewport bottom. */
   @media(max-width:600px){body{min-height:100vh;min-height:100dvh}#metal-appbar{margin-top:0}.composer-wrap{margin-top:auto;padding-bottom:env(safe-area-inset-bottom,0px)}.composer{padding-bottom:0}}
+
+/* Temporary login credential dialog */
+#login-credentials-dialog{width:min(92vw,420px);border:1px solid #777;border-radius:16px;padding:24px;background:#171717;color:#f5f1e8;box-shadow:0 16px 60px #0009}
+#login-credentials-dialog::backdrop{background:#000a;backdrop-filter:blur(3px)}
+#login-credentials-dialog h2{margin:0 0 8px;font-size:1.25rem}
+#login-credentials-dialog p{color:#c8c3b9;line-height:1.5}
+#login-credentials-dialog label{display:block;margin:16px 0 6px;font-weight:600}
+#login-credentials-dialog input{box-sizing:border-box;width:100%;padding:12px;border-radius:9px;border:1px solid #777;background:#242424;color:white;font:inherit}
+#login-credentials-dialog input:focus{outline:2px solid #e5d39b}
+#login-credentials-dialog .login-dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:22px}
+#login-credentials-dialog button{padding:10px 14px;border-radius:9px;border:1px solid #777;background:#292929;color:white;font:inherit}
+#login-credentials-dialog button[type=submit]{background:#efe3bd;color:#171717;font-weight:700}
 </style>
 
 </head>
@@ -729,6 +741,21 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
   </div>
 </section>
 <div id="profile-toast" role="status" aria-live="polite" hidden></div>
+
+<dialog id="login-credentials-dialog" aria-labelledby="login-dialog-title">
+  <form method="dialog" id="login-credentials-form">
+    <h2 id="login-dialog-title">Sign in to continue</h2>
+    <p>Enter credentials for this browser run only. They are sent separately from your prompt and are not saved.</p>
+    <label for="login-username">Email or username</label>
+    <input id="login-username" name="username" type="text" autocomplete="username" required>
+    <label for="login-password">Password</label>
+    <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+    <div class="login-dialog-actions">
+      <button type="button" id="login-dialog-cancel">Cancel</button>
+      <button type="submit">Continue securely</button>
+    </div>
+  </form>
+</dialog>
 
 <main id="chat" aria-live="polite"></main>
 
@@ -975,11 +1002,28 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     buffer+=decoder.decode();if(buffer.trim())parseEvent(buffer);
     if(!terminalEventReceived)throw new Error('The stream ended before the agent sent a final result. Please retry the task.');
   }
+  function requestLoginCredentials(){
+    const dialog=document.getElementById('login-credentials-dialog');
+    const form=document.getElementById('login-credentials-form');
+    const username=document.getElementById('login-username');
+    const password=document.getElementById('login-password');
+    const cancel=document.getElementById('login-dialog-cancel');
+    username.value='';password.value='';
+    return new Promise(function(resolve){
+      function cleanup(result){dialog.close();form.removeEventListener('submit',submit);cancel.removeEventListener('click',cancelRequest);dialog.removeEventListener('cancel',cancelRequest);resolve(result)}
+      function submit(event){event.preventDefault();const result={username:username.value,password:password.value};username.value='';password.value='';cleanup(result)}
+      function cancelRequest(event){if(event)event.preventDefault();username.value='';password.value='';cleanup(null)}
+      form.addEventListener('submit',submit);cancel.addEventListener('click',cancelRequest);dialog.addEventListener('cancel',cancelRequest,{once:true});dialog.showModal();username.focus();
+    });
+  }
   window.ShiwaUI.connect({
     supportsAttachments:false,
     async send(payload){
       if(payload.files&&payload.files.length)throw new Error('File attachments are not supported by this backend yet.');
       const task=(payload.text||'').trim();if(!task)return 'Please enter a task for the agent.';
+      const loginIntent=/\b(?:log\s*(?:in|into)|login|sign\s*(?:in|into)|sign-in|authenticate)\b|(?:وارد\s*شو|وارد\s*حساب|لاگین|ورود\s*به\s*حساب)/i.test(task);
+      let credentials=null;
+      if(loginIntent){credentials=await requestLoginCredentials();if(!credentials)return 'Login canceled. Your credentials were not sent.';}
       terminalEventReceived=false;window.__liveBrowserResult=null;
       try{
         // This app uses same-origin HTTP streaming (SSE), not WebSockets. URL resolution
@@ -987,7 +1031,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
         const endpoint=new URL('/execute/stream',window.location.href);
         let response;
         try{
-          response=await fetch(endpoint.href,{method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify({task})});
+          response=await fetch(endpoint.href,{method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify({task,login_username:credentials&&credentials.username,login_password:credentials&&credentials.password})});
         }catch(error){
           throw new Error('Could not reach '+endpoint.origin+'/execute/stream: '+(error&&error.message||'network request failed'));
         }
@@ -1000,6 +1044,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
         const pageTitle=(typeof result.page_title==='string'?result.page_title:'').trim();
         return pageTitle||'The task finished, but I couldn’t find an answer on that page.';
       }catch(error){panel.classList.add('failed');status.textContent=error.message||'Task failed';throw error}
+      finally{if(credentials){credentials.username='';credentials.password='';credentials=null}}
     }
   });
 })();</script>

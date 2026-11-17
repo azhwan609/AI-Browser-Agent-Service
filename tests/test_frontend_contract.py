@@ -26,6 +26,14 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("localhost:8000", self.html)
         self.assertNotIn("127.0.0.1:8000", self.html)
 
+    def test_login_credentials_use_masked_ephemeral_dialog_and_separate_payload_fields(self):
+        self.assertIn('id="login-credentials-dialog"', self.html)
+        self.assertIn('type="password" autocomplete="current-password"', self.html)
+        self.assertIn("They are sent separately from your prompt and are not saved.", self.html)
+        self.assertIn("login_username:credentials&&credentials.username", self.html)
+        self.assertIn("login_password:credentials&&credentials.password", self.html)
+        self.assertIn("finally{if(credentials){credentials.username='';credentials.password='';credentials=null}}", self.html)
+
     def test_live_panel_only_opens_for_browser_tasks(self):
         self.assertIn("if(data.browser_task)showPanel();else panel.hidden=true;", self.html)
         self.assertIn('"browser_task": browser_task', self.backend)

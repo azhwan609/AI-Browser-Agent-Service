@@ -28,7 +28,7 @@ class LiveStreamTests(unittest.TestCase):
                 response = self.client.get(path)
 
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.text, "V2.9 - Cart Link Prioritized")
+                self.assertEqual(response.text, "V3.0 - Secure Login Assist")
                 self.assertTrue(response.headers["content-type"].startswith("text/plain"))
 
     def test_root_serves_the_frontend_adapter(self):
@@ -37,6 +37,30 @@ class LiveStreamTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.headers["content-type"].startswith("text/html"))
         self.assertIn("AI_BROWSER_AGENT_BACKEND_ADAPTER", response.text)
+
+    def test_temporary_login_credentials_fill_only_matching_blank_fields(self):
+        plan = main.BrowserPlan(goal="Sign in", steps=[
+            main.BrowserAction(action="fill", target="Username", value=""),
+            main.BrowserAction(action="fill", target="Password", value=""),
+            main.BrowserAction(action="fill", target="Search", value="my query"),
+        ])
+        updated = main._apply_login_credentials(
+            plan, "person@example.com", "secret-value", "Log in to example.com"
+        )
+        self.assertEqual([step.value for step in updated.steps], ["person@example.com", "secret-value", "my query"])
+        self.assertEqual([step.value for step in plan.steps], ["", "", "my query"])
+        unchanged = main._apply_login_credentials(
+            plan, "person@example.com", "secret-value", "Search example.com"
+        )
+        self.assertEqual(unchanged, plan)
+
+    def test_login_target_semantics_include_common_names_and_persian(self):
+        self.assertEqual(main._login_field_kind("Email address"), "username")
+        self.assertEqual(main._login_field_kind("Username"), "username")
+        self.assertEqual(main._login_field_kind("Password"), "password")
+        self.assertEqual(main._login_field_kind("رمز عبور"), "password")
+        self.assertTrue(main._is_login_intent("لطفاً وارد حساب شو"))
+        self.assertFalse(main._is_login_intent("صفحه را باز کن"))
 
     def test_sse_event_format(self):
         event = main._sse_event("status", {"message": "Started"})
@@ -89,6 +113,38 @@ class LiveStreamTests(unittest.TestCase):
         frame_position = response.text.index(f"data:image/jpeg;base64,{frame}")
         status_position = response.text.index('"message": "Status after frame"')
         self.assertLess(frame_position, status_position)
+
+    def test_stream_sends_task_without_secrets_to_planner_and_applies_secrets_afterward(self):
+        captured = {}
+        login_plan = main.BrowserPlan(goal="Sign in", steps=[
+            main.BrowserAction(action="navigate", target="https://example.com/login", value=""),
+            main.BrowserAction(action="fill", target="Username", value=""),
+            main.BrowserAction(action="fill", target="Password", value=""),
+        ])
+
+        async def fake_execute(plan, frame_callback=None, progress_callback=None):
+            captured["plan"] = plan
+            return "Signed in", len(plan.steps), "Example", "https://example.com/"
+
+        def fake_plan(task, *_):
+            captured["task"] = task
+            return login_plan
+
+        with patch.object(main, "_generate_plan_sync", side_effect=fake_plan), patch.object(
+            main, "_execute_plan", side_effect=fake_execute
+        ):
+            response = self.client.post("/execute/stream", json={
+                "task": "Open https://example.com/login and log in",
+                "login_username": "person@example.com",
+                "login_password": "never-send-this-to-the-planner",
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["task"], "Open https://example.com/login and log in")
+        self.assertNotIn("never-send-this-to-the-planner", captured["task"])
+        self.assertEqual([step.value for step in captured["plan"].steps], [
+            "", "person@example.com", "never-send-this-to-the-planner"
+        ])
 
     def test_stream_hides_playwright_error_details(self):
         async def fail_execute(plan, frame_callback=None, progress_callback=None):

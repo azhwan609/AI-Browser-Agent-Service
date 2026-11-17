@@ -30,7 +30,7 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 12
 MAX_EXTRACT_CHARS = 4_000
-VERSION_TAG = "V2.9 - Cart Link Prioritized"
+VERSION_TAG = "V3.0 - Secure Login Assist"
 BROWSER_ACTION_RE = re.compile(
     r"\b(?:go\s+to|navigate(?:\s+to)?|visit|browse(?:\s+to)?|click|fill|"
     r"type\s+(?:into|in)|enter\s+(?:into|in)|submit|extract|scrape|"
@@ -99,6 +99,8 @@ class ExecuteRequest(BaseModel):
 
     task: str = Field(min_length=1, max_length=MAX_TASK_CHARS)
     profile_id: str | None = Field(default=None, max_length=80)
+    login_username: str | None = Field(default=None, max_length=320)
+    login_password: str | None = Field(default=None, max_length=1_000)
 
 
 class BrowserAction(BaseModel):
@@ -118,6 +120,45 @@ class BrowserPlan(BaseModel):
 
     goal: str = Field(max_length=400)
     steps: list[BrowserAction] = Field(max_length=MAX_ACTIONS)
+
+
+def _login_field_kind(target: str) -> str | None:
+    if re.search(r"\b(?:password|passcode|رمز(?:\s*عبور)?)\b", target, re.IGNORECASE):
+        return "password"
+    if re.search(r"\b(?:email|e-mail|username|user\s*name|login|ایمیل|نام\s*کاربری)\b", target, re.IGNORECASE):
+        return "username"
+    return None
+
+
+def _is_login_intent(task: str) -> bool:
+    return bool(re.search(
+        r"\b(?:log\s*(?:in|into)|login|sign\s*(?:in|into)|sign-in|authenticate)\b|"
+        r"(?:وارد\s*شو|وارد\s*حساب|لاگین|ورود\s*به\s*حساب)",
+        task,
+        re.IGNORECASE,
+    ))
+
+
+def _apply_login_credentials(
+    plan: BrowserPlan, username: str | None, password: str | None, task: str = ""
+) -> BrowserPlan:
+    """Attach request-scoped credentials to matching fill actions; never persist them."""
+    if (task and not _is_login_intent(task)) or (not username and not password):
+        return plan
+    steps: list[BrowserAction] = []
+    changed = False
+    for step in plan.steps:
+        if step.action != "fill":
+            steps.append(step)
+            continue
+        kind = _login_field_kind(step.target)
+        secret = username if kind == "username" else password if kind == "password" else None
+        if secret:
+            steps.append(step.model_copy(update={"value": secret}))
+            changed = True
+        else:
+            steps.append(step)
+    return plan.model_copy(update={"steps": steps}) if changed else plan
 
 
 def _requested_extraction_target(task: str) -> str | None:
@@ -338,6 +379,12 @@ If the user clearly names exactly one product but the step's target is merely
 'Add' and click.value is blank, let the executor infer that single named title
 from the user's task and scope the control to its product card. Never guess among
 multiple products or click an unscoped duplicate add-to-cart control.
+
+When the user explicitly asks to sign in (including Persian 'وارد شو' or 'لاگین کن') but does not include credentials in the
+task text, plan visible username/email and password fill actions with empty value
+strings, targeting the field labels or placeholders. The server may supply
+request-scoped credentials separately; never invent credentials or ask the model
+to collect, store, or repeat them.
 
 For multi-page workflows, include every intermediate transition explicitly;
 never try to use a control on a later page before a step has reached that page.
@@ -731,6 +778,37 @@ async def _click_locator_for_action(page, target: str, value: str):
     return await _unscoped_click_locator(page, target)
 
 
+async def _fill_field_locator(page, target: str):
+    """Resolve visible form fields by label/placeholder, then common login semantics."""
+    candidates = [
+        page.get_by_label(target, exact=False),
+        page.get_by_placeholder(target, exact=False),
+        page.get_by_role("textbox", name=target),
+    ]
+    kind = _login_field_kind(target)
+    semantic_selectors = {
+        "username": (
+            'input[autocomplete="username"]:visible',
+            'input[name="username"]:visible',
+            'input[id="user-name"]:visible',
+            'input[type="email"]:visible',
+        ),
+        "password": (
+            'input[autocomplete="current-password"]:visible',
+            'input[type="password"]:visible',
+        ),
+    }
+    for selector in semantic_selectors.get(kind, ()):
+        candidates.append(page.locator(selector))
+    for candidate in candidates:
+        count = await candidate.count()
+        if count == 1:
+            return candidate.first
+        if count > 1:
+            raise ValueError("The requested text field matches multiple controls; identify the intended field.")
+    return None
+
+
 async def _execute_plan(
     plan: BrowserPlan,
     frame_callback=None,
@@ -937,16 +1015,7 @@ async def _execute_plan_browser_with_proxy(
                 elif step.action == "fill":
                     if not target or not value:
                         raise ValueError("A fill action requires a field label and a value.")
-                    candidates = [
-                        page.get_by_label(target, exact=False),
-                        page.get_by_placeholder(target, exact=False),
-                        page.get_by_role("textbox", name=target),
-                    ]
-                    locator = None
-                    for candidate in candidates:
-                        if await candidate.count() > 0:
-                            locator = candidate.first
-                            break
+                    locator = await _fill_field_locator(page, target)
                     if locator is None:
                         raise ValueError("The requested text field was not found.")
                     field = await locator.evaluate(
@@ -1079,6 +1148,9 @@ async def execute(
         try:
             plan = _enforce_requested_extraction(plan, payload.task)
             plan = _normalize_requested_cart_items(plan, payload.task)
+            plan = _apply_login_credentials(
+                plan, payload.login_username, payload.login_password, payload.task
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -1185,6 +1257,9 @@ async def _execute_stream_events(payload: ExecuteRequest, profile_owner: str | N
         try:
             plan = _enforce_requested_extraction(plan, payload.task)
             plan = _normalize_requested_cart_items(plan, payload.task)
+            plan = _apply_login_credentials(
+                plan, payload.login_username, payload.login_password, payload.task
+            )
         except ValueError as exc:
             yield _sse_event("error", {"message": str(exc)})
             return
