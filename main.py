@@ -9,7 +9,7 @@ import re
 from collections import deque
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 # Match the package-local browser location used by the Render build command.
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
@@ -30,7 +30,7 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 12
 MAX_EXTRACT_CHARS = 4_000
-VERSION_TAG = "V2.4 - Product-Scoped Cart Actions"
+VERSION_TAG = "V2.5 - Safe Cart Flow Validation"
 BROWSER_ACTION_RE = re.compile(
     r"\b(?:go\s+to|navigate(?:\s+to)?|visit|browse(?:\s+to)?|click|fill|"
     r"type\s+(?:into|in)|enter\s+(?:into|in)|submit|extract|scrape|"
@@ -158,6 +158,33 @@ def _enforce_requested_extraction(plan: BrowserPlan, task: str) -> BrowserPlan:
         raise ValueError("The browser plan leaves no room for the requested extraction step.")
     steps.append(BrowserAction(action="extract", target=target, value=""))
     return plan.model_copy(update={"steps": steps})
+
+
+def _validate_requested_cart_items(plan: BrowserPlan, task: str) -> None:
+    """Reject unrequested or duplicate product additions before opening a browser."""
+    task_tokens = set(re.findall(r"[^\W_]+", task.casefold(), flags=re.UNICODE))
+    generic_tokens = {"sauce", "labs", "add", "to", "cart", "basket", "product", "item", "the", "a", "an"}
+    added_items: set[frozenset[str]] = set()
+
+    for step in plan.steps:
+        if step.action != "click" or not re.search(
+            r"\badd\s+to\s+(?:cart|basket)\b", step.target, re.IGNORECASE
+        ):
+            continue
+        title = " ".join(step.value.split())
+        if not title:
+            continue  # The executor rejects ambiguous repeated buttons on the page.
+        item_tokens = {
+            token
+            for token in re.findall(r"[^\W_]+", title.casefold(), flags=re.UNICODE)
+            if token not in generic_tokens and len(token) > 2
+        }
+        if not item_tokens.intersection(task_tokens):
+            raise ValueError("The plan tried to add a product that you did not name.")
+        item_key = frozenset(item_tokens)
+        if item_key in added_items:
+            raise ValueError("The plan tried to add the same product more than once.")
+        added_items.add(item_key)
 
 
 class ExecuteResponse(BaseModel):
@@ -757,8 +784,9 @@ async def _execute_plan_browser_with_proxy(
                         if not visible:
                             cart_link = await _visible_cart_link(page)
                             if cart_link is not None:
-                                cart_href = await cart_link.evaluate("element => element.href")
-                                if not await _is_public_web_url(cart_href):
+                                cart_href = await cart_link.get_attribute("href")
+                                cart_url = urljoin(page.url, cart_href) if cart_href else page.url
+                                if not await _is_public_web_url(cart_url):
                                     raise ValueError("The cart link does not point to a public HTTP(S) destination.")
                                 if progress_callback is not None:
                                     await progress_callback({"message": "Opening the cart to reach checkout…"})
@@ -769,6 +797,7 @@ async def _execute_plan_browser_with_proxy(
                     control = await locator.evaluate(
                         """element => {
                           const anchor = element.closest('a[href]');
+                          const samePageAnchor = element.closest('a');
                           const actionable = element.closest('button, input[type=submit], input[type=button], input[type=reset]');
                           return anchor ? {
                             kind: 'link',
@@ -778,13 +807,20 @@ async def _execute_plan_browser_with_proxy(
                             kind: 'control',
                             disabled: Boolean(actionable.disabled),
                             text: (actionable.innerText || actionable.value || actionable.getAttribute('aria-label') || '').trim()
+                          } : samePageAnchor ? {
+                            kind: 'same-page-link',
+                            text: (samePageAnchor.innerText || samePageAnchor.getAttribute('aria-label') || '').trim()
                           } : null;
                         }"""
                     )
                     if not control:
                         raise ValueError("Only visible links and standard form controls can be clicked.")
-                    if control["kind"] == "link" and not await _is_public_web_url(control["href"]):
+                    if control["kind"] == "link" and control.get("href") and not await _is_public_web_url(control["href"]):
                         raise ValueError("The link does not point to a public HTTP(S) destination.")
+                    if control["kind"] == "same-page-link" and not re.search(
+                        r"\b(?:cart|basket)\b", target, re.IGNORECASE
+                    ):
+                        raise ValueError("Links without a public destination are only allowed for the requested cart control.")
                     if control.get("disabled"):
                         raise ValueError("Disabled form controls cannot be clicked.")
                     await locator.click(timeout=10_000)
@@ -933,6 +969,7 @@ async def execute(
     if browser_task:
         try:
             plan = _enforce_requested_extraction(plan, payload.task)
+            _validate_requested_cart_items(plan, payload.task)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -1038,6 +1075,7 @@ async def _execute_stream_events(payload: ExecuteRequest, profile_owner: str | N
     if browser_task:
         try:
             plan = _enforce_requested_extraction(plan, payload.task)
+            _validate_requested_cart_items(plan, payload.task)
         except ValueError as exc:
             yield _sse_event("error", {"message": str(exc)})
             return

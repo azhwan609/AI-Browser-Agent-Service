@@ -28,7 +28,7 @@ class LiveStreamTests(unittest.TestCase):
                 response = self.client.get(path)
 
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.text, "V2.4 - Product-Scoped Cart Actions")
+                self.assertEqual(response.text, "V2.5 - Safe Cart Flow Validation")
                 self.assertTrue(response.headers["content-type"].startswith("text/plain"))
 
     def test_root_serves_the_frontend_adapter(self):
@@ -324,6 +324,28 @@ class LiveStreamTests(unittest.TestCase):
 
         self.assertIs(locator, button.first)
         container.get_by_role.assert_called_once_with("button", name="Add to cart", exact=True)
+
+    def test_cart_plans_reject_unrequested_and_duplicate_products(self):
+        backpack = main.BrowserAction(
+            action="click", target="Add to cart", value="Sauce Labs Backpack"
+        )
+        bike_light = main.BrowserAction(
+            action="click", target="Add to cart", value="Sauce Labs Bike Light"
+        )
+        task = "Add only the Sauce Labs Backpack to the cart once."
+
+        with self.assertRaisesRegex(ValueError, "did not name"):
+            main._validate_requested_cart_items(
+                main.BrowserPlan(goal="add products", steps=[backpack, bike_light]), task
+            )
+        with self.assertRaisesRegex(ValueError, "more than once"):
+            main._validate_requested_cart_items(
+                main.BrowserPlan(goal="add twice", steps=[backpack, backpack]), task
+            )
+
+        main._validate_requested_cart_items(
+            main.BrowserPlan(goal="add one", steps=[backpack]), task
+        )
 
     def test_system_prompt_maps_title_text_and_h1_to_extraction_actions(self):
         self.assertIn(f"no more than {main.MAX_ACTIONS} steps", main.SYSTEM_PROMPT)
