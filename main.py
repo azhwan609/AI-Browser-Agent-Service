@@ -30,7 +30,7 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 12
 MAX_EXTRACT_CHARS = 4_000
-VERSION_TAG = "V2.6 - Safe Cart Flow Validation"
+VERSION_TAG = "V2.7 - Unambiguous Product Actions"
 BROWSER_ACTION_RE = re.compile(
     r"\b(?:go\s+to|navigate(?:\s+to)?|visit|browse(?:\s+to)?|click|fill|"
     r"type\s+(?:into|in)|enter\s+(?:into|in)|submit|extract|scrape|"
@@ -160,6 +160,17 @@ def _enforce_requested_extraction(plan: BrowserPlan, task: str) -> BrowserPlan:
     return plan.model_copy(update={"steps": steps})
 
 
+def _is_cart_add_action(step: BrowserAction, task: str) -> bool:
+    if step.action != "click":
+        return False
+    if re.search(r"\badd\b.{0,100}\b(?:cart|basket)\b", step.target, re.IGNORECASE):
+        return True
+    return bool(
+        re.fullmatch(r"add(?:\s+to)?", step.target.strip(), re.IGNORECASE)
+        and re.search(r"\b(?:cart|basket)\b|سبد\s*خرید", task, re.IGNORECASE)
+    )
+
+
 def _normalize_requested_cart_items(plan: BrowserPlan, task: str) -> BrowserPlan:
     """Keep only unique, explicitly requested product additions in a browser plan."""
     task_tokens = set(re.findall(r"[^\W_]+", task.casefold(), flags=re.UNICODE))
@@ -169,9 +180,7 @@ def _normalize_requested_cart_items(plan: BrowserPlan, task: str) -> BrowserPlan
     skipped_additions = 0
 
     for step in plan.steps:
-        if step.action != "click" or not re.search(
-            r"\badd\s+to\s+(?:cart|basket)\b", step.target, re.IGNORECASE
-        ):
+        if not _is_cart_add_action(step, task):
             normalized_steps.append(step)
             continue
         title = " ".join(step.value.split())
@@ -195,7 +204,7 @@ def _normalize_requested_cart_items(plan: BrowserPlan, task: str) -> BrowserPlan
 
     if skipped_additions and not any(
         step.action == "click"
-        and re.search(r"\badd\s+to\s+(?:cart|basket)\b", step.target, re.IGNORECASE)
+        and _is_cart_add_action(step, task)
         for step in normalized_steps
     ):
         raise ValueError("I couldn't safely match the requested product to an add-to-cart action.")
@@ -592,17 +601,34 @@ async def _is_public_web_url(url: str) -> bool:
 
 
 async def _unscoped_click_locator(page, target: str):
-    """Find the normal exact-text or accessible-name target for a click."""
-    locator = page.get_by_text(target, exact=True).first
-    if await locator.count() == 0:
-        for role in ("button", "link"):
-            candidate = page.get_by_role(role, name=target, exact=True)
-            if await candidate.count() > 0:
-                locator = candidate.first
-                break
-        else:
-            locator = page.get_by_text(target, exact=False).first
-    return locator
+    """Only resolve an unscoped click when exactly one control matches."""
+    for role in ("button", "link"):
+        candidate = page.get_by_role(role, name=target, exact=True)
+        count = await candidate.count()
+        if count == 1:
+            return candidate.first
+        if count > 1:
+            raise ValueError("The click target matches multiple controls; identify the intended item.")
+
+    exact_text = page.get_by_text(target, exact=True).first
+    exact_count = await exact_text.count()
+    if exact_count == 1:
+        return exact_text
+    if exact_count > 1:
+        raise ValueError("The click text matches multiple elements; identify the intended control.")
+
+    for role in ("button", "link"):
+        candidate = page.get_by_role(role, name=target, exact=False)
+        count = await candidate.count()
+        if count == 1:
+            return candidate.first
+        if count > 1:
+            raise ValueError("The partial click name matches multiple controls; identify the intended item.")
+
+    partial_text = page.get_by_text(target, exact=False).first
+    if await partial_text.count() > 1:
+        raise ValueError("The partial click text matches multiple elements; identify the intended control.")
+    return partial_text
 
 
 async def _scoped_click_locator(page, target: str, item_title: str):
@@ -621,6 +647,12 @@ async def _scoped_click_locator(page, target: str, item_title: str):
                 return candidate.first
             if count > 1:
                 raise ValueError("The requested control is not unique within that product or item.")
+            candidate = ancestor.get_by_role(role, name=target, exact=False)
+            count = await candidate.count()
+            if count == 1:
+                return candidate.first
+            if count > 1:
+                raise ValueError("The partial control name is not unique within that product or item.")
     raise ValueError("The requested control was not found within the named product or item.")
 
 
@@ -785,8 +817,8 @@ async def _execute_plan_browser_with_proxy(
                         if value.strip()
                         else await _unscoped_click_locator(page, target)
                     )
-                    if not value.strip() and re.fullmatch(r"add to (?:cart|basket)", target, re.IGNORECASE):
-                        matching_controls = page.get_by_role("button", name=target, exact=True)
+                    if not value.strip() and re.match(r"add\b", target, re.IGNORECASE):
+                        matching_controls = page.get_by_role("button", name=target, exact=False)
                         if await matching_controls.count() > 1:
                             raise ValueError(
                                 "Several products have the same add-to-cart button; the plan must name the requested product."

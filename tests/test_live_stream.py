@@ -28,7 +28,7 @@ class LiveStreamTests(unittest.TestCase):
                 response = self.client.get(path)
 
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.text, "V2.6 - Safe Cart Flow Validation")
+                self.assertEqual(response.text, "V2.7 - Unambiguous Product Actions")
                 self.assertTrue(response.headers["content-type"].startswith("text/plain"))
 
     def test_root_serves_the_frontend_adapter(self):
@@ -312,25 +312,27 @@ class LiveStreamTests(unittest.TestCase):
         item.count = AsyncMock(return_value=1)
         container = MagicMock()
         item.locator.return_value = container
-        button = MagicMock()
-        button.count = AsyncMock(return_value=1)
-        container.get_by_role.return_value = button
+        exact_button = MagicMock()
+        exact_button.count = AsyncMock(return_value=0)
+        partial_button = MagicMock()
+        partial_button.count = AsyncMock(return_value=1)
+        container.get_by_role.side_effect = [exact_button, partial_button]
         page = MagicMock()
         page.get_by_text.return_value.first = item
 
         locator = asyncio.run(
-            main._scoped_click_locator(page, "Add to cart", "Sauce Labs Backpack")
+            main._scoped_click_locator(page, "Add", "Sauce Labs Backpack")
         )
 
-        self.assertIs(locator, button.first)
-        container.get_by_role.assert_called_once_with("button", name="Add to cart", exact=True)
+        self.assertIs(locator, partial_button.first)
+        self.assertEqual(container.get_by_role.call_count, 2)
 
     def test_cart_plans_keep_only_requested_unique_products(self):
         backpack = main.BrowserAction(
-            action="click", target="Add to cart", value="Sauce Labs Backpack"
+            action="click", target="Add", value="Sauce Labs Backpack"
         )
         bike_light = main.BrowserAction(
-            action="click", target="Add to cart", value="Sauce Labs Bike Light"
+            action="click", target="Add", value="Sauce Labs Bike Light"
         )
         task = "Add only the Sauce Labs Backpack to the cart once."
 
@@ -338,6 +340,22 @@ class LiveStreamTests(unittest.TestCase):
             main.BrowserPlan(goal="add products", steps=[backpack, bike_light, backpack]), task
         )
         self.assertEqual(normalized.steps, [backpack])
+
+    def test_unscoped_click_locator_rejects_ambiguous_partial_button(self):
+        exact_button = MagicMock()
+        exact_button.count = AsyncMock(return_value=0)
+        exact_link = MagicMock()
+        exact_link.count = AsyncMock(return_value=0)
+        partial_button = MagicMock()
+        partial_button.count = AsyncMock(return_value=6)
+        page = MagicMock()
+        page.get_by_role.side_effect = [exact_button, exact_link, partial_button]
+        exact_text = MagicMock()
+        exact_text.count = AsyncMock(return_value=0)
+        page.get_by_text.return_value.first = exact_text
+
+        with self.assertRaisesRegex(ValueError, "partial click name matches multiple"):
+            asyncio.run(main._unscoped_click_locator(page, "Add"))
 
     def test_cart_plan_without_any_requested_product_fails_safely(self):
         bike_light = main.BrowserAction(
