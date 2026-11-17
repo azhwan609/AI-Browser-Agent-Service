@@ -13,6 +13,14 @@ class FrontendContractTests(unittest.TestCase):
         cls.requirements = (root / "requirements.txt").read_text(encoding="utf-8")
         cls.render_config = (root / "render.yaml").read_text(encoding="utf-8")
 
+    def test_mobile_layout_removes_top_gap_and_anchors_composer_at_bottom(self):
+        css = re.findall(r"<style\b[^>]*>(.*?)</style>", self.html, re.S)[-1]
+        self.assertIn("@media(max-width:600px)", css)
+        self.assertIn("body{min-height:100vh;min-height:100dvh}", css)
+        self.assertIn("#metal-appbar{margin-top:0}", css)
+        self.assertIn(".composer-wrap{margin-top:auto;padding-bottom:env(safe-area-inset-bottom,0px)}", css)
+        self.assertIn(".composer{padding-bottom:0}", css)
+
     def test_sse_endpoint_is_same_origin_and_not_hardcoded(self):
         self.assertIn("new URL('/execute/stream',window.location.href)", self.html)
         self.assertNotIn("localhost:8000", self.html)
