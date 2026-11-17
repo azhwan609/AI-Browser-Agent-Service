@@ -3,7 +3,7 @@ import base64
 import os
 import socket
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -278,12 +278,37 @@ class LiveStreamTests(unittest.TestCase):
         self.assertIn('"output": "Google"', response.text)
         self.assertEqual(captured["plan"].steps[-1].target, "page title")
 
-    def test_browser_plan_rejects_more_than_six_steps(self):
+    def test_browser_plan_allows_twelve_steps_but_rejects_thirteen(self):
         action = main.BrowserAction(action="navigate", target="https://example.com", value="")
+        plan = main.BrowserPlan(goal="bounded workflow", steps=[action] * main.MAX_ACTIONS)
+        self.assertEqual(len(plan.steps), 12)
         with self.assertRaises(ValidationError):
-            main.BrowserPlan(goal="too many steps", steps=[action] * 7)
+            main.BrowserPlan(goal="too many steps", steps=[action] * 13)
+
+    def test_plan_planner_retries_json_mode_after_groq_schema_validation_error(self):
+        client = MagicMock()
+        completion = MagicMock()
+        completion.choices[0].message.content = (
+            '{"goal":"Read the page","steps":[{"action":"navigate",'
+            '"target":"https://example.com/","value":""}]}'
+        )
+        client.chat.completions.create.side_effect = [
+            RuntimeError("Groq json_validate_failed: Failed to validate JSON"),
+            completion,
+        ]
+
+        with patch.object(main, "Groq", return_value=client):
+            plan = main._generate_plan_sync("Open example.com", "test-key", "test-model")
+
+        self.assertEqual(plan.steps[0].action, "navigate")
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        calls = client.chat.completions.create.call_args_list
+        self.assertEqual(calls[0].kwargs["response_format"]["type"], "json_schema")
+        self.assertEqual(calls[1].kwargs["response_format"], {"type": "json_object"})
+        client.close.assert_called_once()
 
     def test_system_prompt_maps_title_text_and_h1_to_extraction_actions(self):
+        self.assertIn(f"no more than {main.MAX_ACTIONS} steps", main.SYSTEM_PROMPT)
         self.assertIn("target 'page title' (read page.title()", main.SYSTEM_PROMPT)
         self.assertIn("target 'css:h1'", main.SYSTEM_PROMPT)
         self.assertIn("'page text'", main.SYSTEM_PROMPT)
