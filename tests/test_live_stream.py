@@ -28,7 +28,7 @@ class LiveStreamTests(unittest.TestCase):
                 response = self.client.get(path)
 
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.text, "V2.0 - Chat Routing Active")
+                self.assertEqual(response.text, "V2.2 - Persistent Session Recovery")
                 self.assertTrue(response.headers["content-type"].startswith("text/plain"))
 
     def test_root_serves_the_frontend_adapter(self):

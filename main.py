@@ -30,7 +30,7 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 6
 MAX_EXTRACT_CHARS = 4_000
-VERSION_TAG = "V2.0 - Chat Routing Active"
+VERSION_TAG = "V2.2 - Persistent Session Recovery"
 BROWSER_ACTION_RE = re.compile(
     r"\b(?:go\s+to|navigate(?:\s+to)?|visit|browse(?:\s+to)?|click|fill|"
     r"type\s+(?:into|in)|enter\s+(?:into|in)|submit|extract|scrape|"
