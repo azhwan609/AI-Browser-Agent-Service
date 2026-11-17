@@ -649,6 +649,10 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
 #login-credentials-dialog .login-dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:22px}
 #login-credentials-dialog button{padding:10px 14px;border-radius:9px;border:1px solid #777;background:#292929;color:white;font:inherit}
 #login-credentials-dialog button[type=submit]{background:#efe3bd;color:#171717;font-weight:700}
+
+#login-credentials-dialog .login-remember{display:flex;align-items:center;gap:10px;line-height:1.4;font-weight:500}
+#login-credentials-dialog .login-remember input{width:20px;height:20px;flex:0 0 auto;margin:0}
+#login-dialog-status{min-height:1.2em;color:#d8cba9;font-size:.9rem}
 </style>
 
 </head>
@@ -718,7 +722,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     <p class="profile-intro">Manage the identity providers that could be linked to your agent account. Connections are not active in this preview.</p>
     <div class="profile-security-note" role="note">
       <span class="profile-security-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg></span>
-      <span><strong>No passwords are requested or stored.</strong> This screen is a UI preview only. Google/GitHub OAuth has not been configured, so profile linking and sign-in are not yet enabled. Provider authorization would apply only to explicitly approved features—not act as a universal login to unrelated websites.</span>
+      <span><strong>This server profile vault does not store passwords.</strong> The separate browser-task sign-in dialog can optionally remember a credential encrypted on this device only. Google/GitHub OAuth profile linking is not configured. Provider authorization would apply only to explicitly approved features—not act as a universal login to unrelated websites.</span>
     </div>
     <div class="profile-grid" aria-label="Available account providers">
       <article class="profile-card">
@@ -737,7 +741,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
         <button class="profile-connect" type="button" data-profile-preview="additional providers">View setup status</button>
       </article>
     </div>
-    <p class="profile-later">When account linking is enabled, each provider will open its official consent page. You will choose whether to approve the requested access; this preview does not initiate a sign-in or collect credentials.</p>
+    <p class="profile-later">Account linking is not active here. Browser-task sign-in is separate and can optionally remember credentials encrypted on this device only.</p>
   </div>
 </section>
 <div id="profile-toast" role="status" aria-live="polite" hidden></div>
@@ -745,11 +749,13 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
 <dialog id="login-credentials-dialog" aria-labelledby="login-dialog-title">
   <form method="dialog" id="login-credentials-form">
     <h2 id="login-dialog-title">Sign in to continue</h2>
-    <p>Enter credentials for this browser run only. They are sent separately from your prompt and are not saved.</p>
+    <p>Credentials are sent separately from your prompt. You may opt to remember them encrypted on this device for this site; they are never saved on Render.</p>
     <label for="login-username">Email or username</label>
     <input id="login-username" name="username" type="text" autocomplete="username" required>
     <label for="login-password">Password</label>
     <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+    <label class="login-remember"><input id="login-remember" type="checkbox"> Remember encrypted on this device for this site</label>
+    <p id="login-dialog-status" role="status" aria-live="polite"></p>
     <div class="login-dialog-actions">
       <button type="button" id="login-dialog-cancel">Cancel</button>
       <button type="submit">Continue securely</button>
@@ -1002,18 +1008,56 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     buffer+=decoder.decode();if(buffer.trim())parseEvent(buffer);
     if(!terminalEventReceived)throw new Error('The stream ended before the agent sent a final result. Please retry the task.');
   }
-  function requestLoginCredentials(){
-    const dialog=document.getElementById('login-credentials-dialog');
-    const form=document.getElementById('login-credentials-form');
-    const username=document.getElementById('login-username');
-    const password=document.getElementById('login-password');
-    const cancel=document.getElementById('login-dialog-cancel');
-    username.value='';password.value='';
+  function loginOrigin(task){
+    const match=String(task||'').match(/https?:\/\/[^\s"'<>]+/i);if(!match)return null;
+    try{const url=new URL(match[0].replace(/[),.;!?]+$/,''));return /^https?:$/.test(url.protocol)?url.origin:null}catch(_){return null}
+  }
+  function openLoginDb(){
+    if(!window.indexedDB||!window.crypto||!crypto.subtle||!window.isSecureContext)throw new Error('Encrypted device storage is unavailable in this browser.');
+    return new Promise(function(resolve,reject){const request=indexedDB.open('shiwa-login-vault-v1',1);request.onupgradeneeded=function(){request.result.createObjectStore('vault')};request.onsuccess=function(){resolve(request.result)};request.onerror=function(){reject(request.error||new Error('Could not open device storage.'))}});
+  }
+  async function loginVaultOp(mode,operation){
+    const db=await openLoginDb();return new Promise(function(resolve,reject){
+      const tx=db.transaction('vault',mode),store=tx.objectStore('vault');let result;
+      try{const request=operation(store);request.onsuccess=function(){result=request.result};request.onerror=function(){reject(request.error||new Error('Device storage operation failed.'))}}
+      catch(error){db.close();reject(error);return}
+      tx.oncomplete=function(){db.close();resolve(result)};tx.onerror=tx.onabort=function(){db.close();reject(tx.error||new Error('Device storage transaction failed.'))};
+    });
+  }
+  async function getLoginKey(create){
+    let key=await loginVaultOp('readonly',function(store){return store.get('__key__')});
+    if(!key&&create){key=await crypto.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']);await loginVaultOp('readwrite',function(store){return store.put(key,'__key__')})}
+    return key||null;
+  }
+  async function readDeviceLogin(origin){
+    const key=await getLoginKey(false);if(!key)return null;const entry=await loginVaultOp('readonly',function(store){return store.get(origin)});if(!entry)return null;
+    const clear=await crypto.subtle.decrypt({name:'AES-GCM',iv:new Uint8Array(entry.iv)},key,new Uint8Array(entry.data));return JSON.parse(new TextDecoder().decode(clear));
+  }
+  async function saveDeviceLogin(origin,credentials){
+    const key=await getLoginKey(true),iv=crypto.getRandomValues(new Uint8Array(12));
+    const data=await crypto.subtle.encrypt({name:'AES-GCM',iv:iv},key,new TextEncoder().encode(JSON.stringify(credentials)));
+    await loginVaultOp('readwrite',function(store){return store.put({iv:Array.from(iv),data:Array.from(new Uint8Array(data))},origin)});
+  }
+  async function forgetDeviceLogin(origin){return loginVaultOp('readwrite',function(store){return store.delete(origin)})}
+  async function requestLoginCredentials(task){
+    const dialog=document.getElementById('login-credentials-dialog'),form=document.getElementById('login-credentials-form');
+    const username=document.getElementById('login-username'),password=document.getElementById('login-password');
+    const remember=document.getElementById('login-remember'),status=document.getElementById('login-dialog-status');
+    const cancel=document.getElementById('login-dialog-cancel'),origin=loginOrigin(task);
+    username.value='';password.value='';remember.checked=false;status.textContent='';
+    remember.disabled=!origin||!window.isSecureContext||!window.indexedDB||!window.crypto||!crypto.subtle;
+    if(remember.disabled)status.textContent=origin?'Encrypted storage is unavailable; this run can continue without saving.':'Add the site URL to the task to enable site-specific encrypted remembrance.';
+    if(origin&&!remember.disabled){try{const saved=await readDeviceLogin(origin);if(saved){username.value=saved.username||'';password.value=saved.password||'';remember.checked=true;status.textContent='Encrypted sign-in found for '+new URL(origin).hostname+'.'}}catch(_){status.textContent='Could not unlock saved sign-in; enter it again or continue without remembrance.'}}
+    dialog.showModal();username.focus();
     return new Promise(function(resolve){
       function cleanup(result){dialog.close();form.removeEventListener('submit',submit);cancel.removeEventListener('click',cancelRequest);dialog.removeEventListener('cancel',cancelRequest);resolve(result)}
-      function submit(event){event.preventDefault();const result={username:username.value,password:password.value};username.value='';password.value='';cleanup(result)}
+      async function submit(event){event.preventDefault();const result={username:username.value,password:password.value};
+        try{if(remember.checked)await saveDeviceLogin(origin,result);else if(origin)await forgetDeviceLogin(origin)}
+        catch(_){status.textContent='Could not update encrypted device storage. Uncheck remembrance to continue without saving.';return}
+        username.value='';password.value='';cleanup(result)
+      }
       function cancelRequest(event){if(event)event.preventDefault();username.value='';password.value='';cleanup(null)}
-      form.addEventListener('submit',submit);cancel.addEventListener('click',cancelRequest);dialog.addEventListener('cancel',cancelRequest,{once:true});dialog.showModal();username.focus();
+      form.addEventListener('submit',submit);cancel.addEventListener('click',cancelRequest);dialog.addEventListener('cancel',cancelRequest,{once:true});
     });
   }
   window.ShiwaUI.connect({
@@ -1023,7 +1067,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
       const task=(payload.text||'').trim();if(!task)return 'Please enter a task for the agent.';
       const loginIntent=/\b(?:log\s*(?:in|into)|login|sign\s*(?:in|into)|sign-in|authenticate)\b|(?:وارد\s*شو|وارد\s*حساب|لاگین|ورود\s*به\s*حساب)/i.test(task);
       let credentials=null;
-      if(loginIntent){credentials=await requestLoginCredentials();if(!credentials)return 'Login canceled. Your credentials were not sent.';}
+      if(loginIntent){credentials=await requestLoginCredentials(task);if(!credentials)return 'Login canceled. Your credentials were not sent.';}
       terminalEventReceived=false;window.__liveBrowserResult=null;
       try{
         // This app uses same-origin HTTP streaming (SSE), not WebSockets. URL resolution

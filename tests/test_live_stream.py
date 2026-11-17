@@ -28,7 +28,7 @@ class LiveStreamTests(unittest.TestCase):
                 response = self.client.get(path)
 
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.text, "V3.0 - Secure Login Assist")
+                self.assertEqual(response.text, "V3.1 - Device-Encrypted Login Memory")
                 self.assertTrue(response.headers["content-type"].startswith("text/plain"))
 
     def test_root_serves_the_frontend_adapter(self):

@@ -29,10 +29,15 @@ class FrontendContractTests(unittest.TestCase):
     def test_login_credentials_use_masked_ephemeral_dialog_and_separate_payload_fields(self):
         self.assertIn('id="login-credentials-dialog"', self.html)
         self.assertIn('type="password" autocomplete="current-password"', self.html)
-        self.assertIn("They are sent separately from your prompt and are not saved.", self.html)
+        self.assertIn("Remember encrypted on this device for this site", self.html)
+        self.assertIn("they are never saved on Render", self.html)
         self.assertIn("login_username:credentials&&credentials.username", self.html)
         self.assertIn("login_password:credentials&&credentials.password", self.html)
         self.assertIn("finally{if(credentials){credentials.username='';credentials.password='';credentials=null}}", self.html)
+        self.assertIn("crypto.subtle.generateKey({name:'AES-GCM',length:256},false", self.html)
+        self.assertIn("indexedDB.open('shiwa-login-vault-v1',1)", self.html)
+        self.assertIn("return /^https?:$/.test(url.protocol)?url.origin:null", self.html)
+        self.assertNotIn("localStorage.setItem", self.html)
 
     def test_live_panel_only_opens_for_browser_tasks(self):
         self.assertIn("if(data.browser_task)showPanel();else panel.hidden=true;", self.html)
@@ -49,7 +54,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="profile-page"', self.html)
         self.assertIn('data-profile-preview="Google"', self.html)
         self.assertIn('data-profile-preview="GitHub"', self.html)
-        self.assertIn("No passwords are requested or stored.", self.html)
+        self.assertIn("This server profile vault does not store passwords.", self.html)
         self.assertIn("Account linking is not active in this preview.", self.html)
         profile_markup = self.html.split('id="profile-page"', 1)[1].split("</section>", 1)[0]
         self.assertNotIn('type="password"', profile_markup)

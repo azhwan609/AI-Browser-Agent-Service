@@ -4,7 +4,7 @@ A FastAPI service with a single-page chat frontend and a Groq-planned, safety-co
 
 - `GET /` serves `manus-obtima.html`.
 - `GET /profiles` serves the same frontend with its account-profile screen selected.
-- `GET /version` returns the deployment fingerprint `V3.0 - Secure Login Assist`; `GET /execute` remains a compatibility alias.
+- `GET /version` returns the deployment fingerprint `V3.1 - Device-Encrypted Login Memory`; `GET /execute` remains a compatibility alias.
 - `POST /execute` accepts `{"task":"..."}` and returns the JSON response format.
 - `POST /execute/stream` accepts the same payload and streams named Server-Sent Events (`status`, `frame`, `complete`, `error`). Frames are Base64 JPEGs in `data:image/jpeg;base64,...` form. The live-browser panel opens only for browser tasks; ordinary chat returns text without a browser panel.
 - The default Groq model is `openai/gpt-oss-20b`; set `GROQ_MODEL` to another active model if needed. Set `GROQ_API_KEY` as a secret environment variable in Render. Never commit the key or put it in the HTML.
@@ -54,5 +54,7 @@ The repository now includes `identity_vault.py`, a file-backed vault for isolate
 The management API is: `POST /api/profiles`, `GET /api/profiles`, `GET/PATCH/DELETE /api/profiles/{profile_id}`, `POST /api/profiles/{profile_id}/default`, `POST /api/profiles/{profile_id}/disconnect`, and `POST /api/profiles/{profile_id}/auth-status`. Browser execution accepts an optional `profile_id`; when both profile headers are present, it restores the encrypted Playwright storage state and saves the updated state encrypted after execution. A saved state is reported as `session_saved`, not as authenticated. Marking it `active` requires an explicit human verification request and a saved state.
 
 Set `IDENTITY_VAULT_KEY`, `PROFILE_ADMIN_KEY`, and `IDENTITY_VAULT_DIR` as Render secrets/configuration. `IDENTITY_VAULT_KEY` must be a stable Fernet key across restarts. The free Render filesystem is ephemeral and the deployed `render.yaml` now fails closed with `REQUIRE_PERSISTENT_STORAGE=true` until a real mount exists. `render.persistent.yaml` is the paid Render Blueprint with a 1 GB disk at `/var/data`; apply it only after approving the paid plan, or use an external encrypted storage service. The application never silently falls back to ephemeral storage.
+
+Browser-task sign-in has an optional “Remember encrypted on this device” choice. It uses Web Crypto AES-GCM with a non-extractable device key in IndexedDB and stores the encrypted record under the exact HTTPS/HTTP origin from the task. Credentials are never saved on Render; clearing browser/app storage or changing devices removes access. Same-origin script compromise or an unlocked, compromised device can still expose credentials, so users should opt in only on a trusted personal device.
 
 Google connection remains browser-mediated and human-controlled. No Google OAuth client is embedded yet, and the current service does not claim a Google account is connected merely because a page redirected. MFA, CAPTCHA, consent, and account verification must be completed by the user in an approved browser interaction before a profile can be marked active.
