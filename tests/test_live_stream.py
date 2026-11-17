@@ -28,7 +28,7 @@ class LiveStreamTests(unittest.TestCase):
                 response = self.client.get(path)
 
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.text, "V2.8 - Intent-Scoped Product Actions")
+                self.assertEqual(response.text, "V2.9 - Cart Link Prioritized")
                 self.assertTrue(response.headers["content-type"].startswith("text/plain"))
 
     def test_root_serves_the_frontend_adapter(self):
@@ -372,6 +372,18 @@ class LiveStreamTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "partial click name matches multiple"):
             asyncio.run(main._unscoped_click_locator(page, "Add"))
+
+    def test_cart_target_prefers_actual_cart_link_before_partial_matching(self):
+        page = MagicMock()
+        cart_link = MagicMock()
+        with patch("main._visible_cart_link", new=AsyncMock(return_value=cart_link)):
+            with patch("main._unscoped_click_locator", new=AsyncMock()) as partial_lookup:
+                locator = asyncio.run(
+                    main._click_locator_for_action(page, "Shopping Cart", "")
+                )
+
+        self.assertIs(locator, cart_link)
+        partial_lookup.assert_not_awaited()
 
     def test_cart_plan_without_any_requested_product_fails_safely(self):
         bike_light = main.BrowserAction(

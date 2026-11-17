@@ -30,7 +30,7 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 12
 MAX_EXTRACT_CHARS = 4_000
-VERSION_TAG = "V2.8 - Intent-Scoped Product Actions"
+VERSION_TAG = "V2.9 - Cart Link Prioritized"
 BROWSER_ACTION_RE = re.compile(
     r"\b(?:go\s+to|navigate(?:\s+to)?|visit|browse(?:\s+to)?|click|fill|"
     r"type\s+(?:into|in)|enter\s+(?:into|in)|submit|extract|scrape|"
@@ -720,6 +720,17 @@ async def _visible_cart_link(page):
     return None
 
 
+async def _click_locator_for_action(page, target: str, value: str):
+    """Resolve item-scoped controls and prefer the actual cart link for cart targets."""
+    if value.strip():
+        return await _scoped_click_locator(page, target, value.strip())
+    if re.search(r"\b(?:cart|basket)\b|سبد\s*خرید", target, re.IGNORECASE):
+        cart_link = await _visible_cart_link(page)
+        if cart_link is not None:
+            return cart_link
+    return await _unscoped_click_locator(page, target)
+
+
 async def _execute_plan(
     plan: BrowserPlan,
     frame_callback=None,
@@ -864,11 +875,7 @@ async def _execute_plan_browser_with_proxy(
                     )
 
                 elif step.action == "click":
-                    locator = (
-                        await _scoped_click_locator(page, target, value.strip())
-                        if value.strip()
-                        else await _unscoped_click_locator(page, target)
-                    )
+                    locator = await _click_locator_for_action(page, target, value)
                     if not value.strip() and re.match(r"add\b", target, re.IGNORECASE):
                         matching_controls = page.get_by_role("button", name=target, exact=False)
                         if await matching_controls.count() > 1:
