@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 # Match the package-local browser location used by the Render build command.
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from groq import Groq
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,6 +22,7 @@ from pyvirtualdisplay import Display
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 from egress_proxy import PublicEgressProxy, resolve_public_addresses
+from identity_vault import IdentityVault, VaultUnavailable, utc_now
 
 logger = logging.getLogger(__name__)
 FRONTEND_FILE = Path(__file__).with_name("manus-obtima.html")
@@ -75,12 +76,29 @@ def _requires_browser(task: str) -> bool:
     )
 
 
+class ProfileCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    auto_reuse: bool = True
+
+
+class ProfileUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    auto_reuse: bool | None = None
+
+
+class HumanAuthStatusRequest(BaseModel):
+    status: Literal["awaiting_user", "active", "expired", "not_connected"]
+    account_email: str | None = Field(default=None, max_length=320)
+    human_verified: bool = False
+
+
 class ExecuteRequest(BaseModel):
     """Natural-language task accepted from the frontend."""
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
     task: str = Field(min_length=1, max_length=MAX_TASK_CHARS)
+    profile_id: str | None = Field(default=None, max_length=80)
 
 
 class BrowserAction(BaseModel):
@@ -227,11 +245,150 @@ should be handled by the browser agent instead."""
 GROQ_SEMAPHORE = asyncio.Semaphore(2)
 BROWSER_SEMAPHORE = asyncio.Semaphore(1)
 
+def _vault_or_503() -> IdentityVault:
+    try:
+        return IdentityVault()
+    except VaultUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Identity Vault is not configured for this deployment.") from exc
+
+
+def _profile_owner(owner: str | None) -> str:
+    try:
+        return IdentityVault.owner_id_from_header(owner)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="X-Profile-Owner header is required.") from exc
+
+
+def _require_profile_admin(admin_key: str | None) -> None:
+    if not IdentityVault.verify_admin_key(admin_key):
+        raise HTTPException(status_code=401, detail="Profile management authorization is required.")
+
+
 app = FastAPI(
     title="AI Browser Agent Service",
     description="Single-page frontend with a constrained Groq and Playwright agent.",
     version="0.4.0",
 )
+
+
+@app.post("/api/profiles")
+async def create_profile(
+    payload: ProfileCreateRequest,
+    x_profile_owner: str | None = Header(default=None),
+    x_profile_admin_key: str | None = Header(default=None),
+):
+    _require_profile_admin(x_profile_admin_key)
+    owner = _profile_owner(x_profile_owner)
+    try:
+        return _vault_or_503().create_profile(owner, payload.name, payload.auto_reuse)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/profiles")
+async def list_profiles(
+    x_profile_owner: str | None = Header(default=None),
+    x_profile_admin_key: str | None = Header(default=None),
+):
+    _require_profile_admin(x_profile_admin_key)
+    return {"profiles": _vault_or_503().list_profiles(_profile_owner(x_profile_owner))}
+
+
+@app.get("/api/profiles/{profile_id}")
+async def get_profile(
+    profile_id: str,
+    x_profile_owner: str | None = Header(default=None),
+    x_profile_admin_key: str | None = Header(default=None),
+):
+    _require_profile_admin(x_profile_admin_key)
+    try:
+        return _vault_or_503().get_profile(_profile_owner(x_profile_owner), profile_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Profile not found.") from exc
+
+
+@app.patch("/api/profiles/{profile_id}")
+async def update_profile(
+    profile_id: str,
+    payload: ProfileUpdateRequest,
+    x_profile_owner: str | None = Header(default=None),
+    x_profile_admin_key: str | None = Header(default=None),
+):
+    _require_profile_admin(x_profile_admin_key)
+    try:
+        return _vault_or_503().update_profile(_profile_owner(x_profile_owner), profile_id, name=payload.name, auto_reuse=payload.auto_reuse)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Profile not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/profiles/{profile_id}/default")
+async def set_default_profile(
+    profile_id: str,
+    x_profile_owner: str | None = Header(default=None),
+    x_profile_admin_key: str | None = Header(default=None),
+):
+    _require_profile_admin(x_profile_admin_key)
+    try:
+        return _vault_or_503().set_default(_profile_owner(x_profile_owner), profile_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Profile not found.") from exc
+
+
+@app.delete("/api/profiles/{profile_id}")
+async def delete_profile(
+    profile_id: str,
+    x_profile_owner: str | None = Header(default=None),
+    x_profile_admin_key: str | None = Header(default=None),
+):
+    _require_profile_admin(x_profile_admin_key)
+    try:
+        _vault_or_503().delete_profile(_profile_owner(x_profile_owner), profile_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Profile not found.") from exc
+    return {"deleted": True}
+
+
+@app.post("/api/profiles/{profile_id}/disconnect")
+async def disconnect_profile(
+    profile_id: str,
+    x_profile_owner: str | None = Header(default=None),
+    x_profile_admin_key: str | None = Header(default=None),
+):
+    _require_profile_admin(x_profile_admin_key)
+    try:
+        return _vault_or_503().disconnect(_profile_owner(x_profile_owner), profile_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Profile not found.") from exc
+
+
+@app.post("/api/profiles/{profile_id}/auth-status")
+async def update_auth_status(
+    profile_id: str,
+    payload: HumanAuthStatusRequest,
+    x_profile_owner: str | None = Header(default=None),
+    x_profile_admin_key: str | None = Header(default=None),
+):
+    _require_profile_admin(x_profile_admin_key)
+    owner = _profile_owner(x_profile_owner)
+    vault = _vault_or_503()
+    try:
+        current = vault.get_profile(owner, profile_id)
+        # This endpoint records an explicit human verification state only; it never accepts passwords or tokens.
+        if payload.status == "active":
+            if not payload.human_verified:
+                raise HTTPException(status_code=409, detail="Active authentication requires explicit human verification.")
+            if not current["has_saved_session"]:
+                raise HTTPException(status_code=409, detail="An encrypted browser session must be saved before marking authentication active.")
+        with vault._db() as conn:
+            conn.execute(
+                "UPDATE profiles SET auth_status=?, account_email=?, last_activity=? WHERE owner_id=? AND id=?",
+                (payload.status, payload.account_email, utc_now(), owner, profile_id),
+            )
+        return vault.get_profile(owner, profile_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Profile not found.") from exc
 
 
 @app.get("/execute", response_class=PlainTextResponse)
@@ -337,6 +494,8 @@ async def _execute_plan(
     plan: BrowserPlan,
     frame_callback=None,
     progress_callback=None,
+    profile_owner: str | None = None,
+    profile_id: str | None = None,
 ) -> tuple[str, int, str, str]:
     """Run a plan in visible Chromium backed by an isolated Xvfb display."""
     display = Display(visible=False, size=(1280, 800))
@@ -387,6 +546,8 @@ async def _execute_plan_browser(
     headless: bool,
     frame_callback=None,
     progress_callback=None,
+    profile_owner: str | None = None,
+    profile_id: str | None = None,
 ) -> tuple[str, int, str, str]:
     """Run Playwright behind a local proxy that pins validated public IPs."""
     async with PublicEgressProxy() as proxy:
@@ -396,6 +557,8 @@ async def _execute_plan_browser(
             headless=headless,
             frame_callback=frame_callback,
             progress_callback=progress_callback,
+            profile_owner=profile_owner,
+            profile_id=profile_id,
         )
 
 
@@ -406,6 +569,8 @@ async def _execute_plan_browser_with_proxy(
     headless: bool,
     frame_callback=None,
     progress_callback=None,
+    profile_owner: str | None = None,
+    profile_id: str | None = None,
 ) -> tuple[str, int, str, str]:
     """Execute the fixed action vocabulary in a fresh, anonymous browser context."""
     output_parts: list[str] = []
@@ -415,11 +580,17 @@ async def _execute_plan_browser_with_proxy(
         browser = await playwright.chromium.launch(headless=headless)
         capture_task = None
         try:
+            vault = None
+            storage_state = None
+            if profile_owner and profile_id:
+                vault = _vault_or_503()
+                storage_state = vault.load_storage_state(profile_owner, profile_id)
             context = await browser.new_context(
                 accept_downloads=False,
                 service_workers="block",
                 viewport={"width": 1280, "height": 800},
                 proxy={"server": proxy.url},
+                storage_state=storage_state,
             )
 
             async def guard_request(route) -> None:
@@ -553,6 +724,19 @@ async def _execute_plan_browser_with_proxy(
                     await capture_task
                 except asyncio.CancelledError:
                     pass
+            if profile_owner and profile_id and vault is not None:
+                try:
+                    # Save supported Playwright storage state encrypted at rest. This is not
+                    # treated as proof of authentication; a human must verify the account.
+                    await asyncio.to_thread(
+                        vault.save_storage_state,
+                        profile_owner,
+                        profile_id,
+                        await context.storage_state(),
+                    )
+                    vault.touch_activity(profile_owner, profile_id)
+                except Exception:
+                    logger.exception("Could not save encrypted browser storage state")
             await browser.close()
 
 
@@ -582,7 +766,11 @@ async def _extract_page_content(page, target: str) -> str:
 
 
 @app.post("/execute", response_model=ExecuteResponse)
-async def execute(payload: ExecuteRequest) -> ExecuteResponse:
+async def execute(
+    payload: ExecuteRequest,
+    x_profile_owner: str | None = Header(default=None),
+    x_profile_admin_key: str | None = Header(default=None),
+) -> ExecuteResponse:
     """Plan and run a bounded browser task using Groq and Playwright."""
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
@@ -592,6 +780,10 @@ async def execute(payload: ExecuteRequest) -> ExecuteResponse:
         )
     model = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL).strip()
     browser_task = _requires_browser(payload.task)
+    profile_owner = None
+    if payload.profile_id:
+        _require_profile_admin(x_profile_admin_key)
+        profile_owner = _profile_owner(x_profile_owner)
 
     try:
         await asyncio.wait_for(GROQ_SEMAPHORE.acquire(), timeout=2)
@@ -646,10 +838,12 @@ async def execute(payload: ExecuteRequest) -> ExecuteResponse:
     except asyncio.TimeoutError as exc:
         raise HTTPException(status_code=429, detail="The browser agent is busy; try again shortly.") from exc
     try:
-        output, completed, page_title, current_url = await asyncio.wait_for(
-            _execute_plan(plan),
-            timeout=60,
+        plan_call = (
+            _execute_plan(plan, profile_owner=profile_owner, profile_id=payload.profile_id)
+            if payload.profile_id
+            else _execute_plan(plan)
         )
+        output, completed, page_title, current_url = await asyncio.wait_for(plan_call, timeout=60)
     except asyncio.TimeoutError as exc:
         raise HTTPException(status_code=504, detail="The browser task exceeded its time limit.") from exc
     except ValueError as exc:
@@ -685,7 +879,7 @@ def _sse_event(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-async def _execute_stream_events(payload: ExecuteRequest):
+async def _execute_stream_events(payload: ExecuteRequest, profile_owner: str | None = None):
     """Stream status and screenshots before sending the final result."""
     browser_task = _requires_browser(payload.task)
     status = "Planning your browser task…" if browser_task else "Writing a reply…"
@@ -778,10 +972,11 @@ async def _execute_stream_events(payload: ExecuteRequest):
             except asyncio.TimeoutError as exc:
                 raise BrowserBusyError from exc
             acquired = True
-            return await asyncio.wait_for(
-                _execute_plan(plan, frame_callback, progress_callback),
-                timeout=60,
-            )
+            if payload.profile_id:
+                plan_call = _execute_plan(plan, frame_callback, progress_callback, profile_owner, payload.profile_id)
+            else:
+                plan_call = _execute_plan(plan, frame_callback, progress_callback)
+            return await asyncio.wait_for(plan_call, timeout=60)
         finally:
             if acquired:
                 BROWSER_SEMAPHORE.release()
@@ -864,10 +1059,18 @@ async def _execute_stream_events(payload: ExecuteRequest):
 
 
 @app.post("/execute/stream", include_in_schema=False)
-async def execute_stream(payload: ExecuteRequest) -> StreamingResponse:
+async def execute_stream(
+    payload: ExecuteRequest,
+    x_profile_owner: str | None = Header(default=None),
+    x_profile_admin_key: str | None = Header(default=None),
+) -> StreamingResponse:
     """Execute a task and stream screenshot frames as Server-Sent Events."""
+    profile_owner = None
+    if payload.profile_id:
+        _require_profile_admin(x_profile_admin_key)
+        profile_owner = _profile_owner(x_profile_owner)
     return StreamingResponse(
-        _execute_stream_events(payload),
+        _execute_stream_events(payload, profile_owner),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",

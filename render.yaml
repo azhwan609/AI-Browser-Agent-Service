@@ -11,3 +11,11 @@ services:
     envVars:
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: /ms-playwright
+
+      # Set these in the Render dashboard; no secret values belong in Git.
+      - key: IDENTITY_VAULT_DIR
+        value: /var/data/identity-vault
+      - key: IDENTITY_VAULT_KEY
+        sync: false
+      - key: PROFILE_ADMIN_KEY
+        sync: false
