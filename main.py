@@ -30,7 +30,7 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 12
 MAX_EXTRACT_CHARS = 4_000
-VERSION_TAG = "V2.2 - Persistent Session Recovery"
+VERSION_TAG = "V2.3 - Resilient Multi-Step Planning"
 BROWSER_ACTION_RE = re.compile(
     r"\b(?:go\s+to|navigate(?:\s+to)?|visit|browse(?:\s+to)?|click|fill|"
     r"type\s+(?:into|in)|enter\s+(?:into|in)|submit|extract|scrape|"
@@ -225,6 +225,13 @@ For Persian requests, map equivalents such as 'عنوان صفحه' to 'page tit
 
 The user may describe an explicit browser task in Persian; recognize equivalent
 Persian actions while preserving the same destination and safety rules.
+
+For multi-page workflows, include every intermediate transition explicitly;
+never try to use a control on a later page before a step has reached that page.
+For an explicitly requested checkout review, plan product add -> click the
+visible Shopping Cart link -> click Checkout -> fill each requested field ->
+click Continue -> extract the overview. Stop before Finish unless the user
+explicitly requests placing the order.
 
 Use no more than {MAX_ACTIONS} steps. Include the complete requested safe workflow
 within that limit; use one visible browser operation per step and avoid redundant

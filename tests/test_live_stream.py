@@ -28,7 +28,7 @@ class LiveStreamTests(unittest.TestCase):
                 response = self.client.get(path)
 
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.text, "V2.2 - Persistent Session Recovery")
+                self.assertEqual(response.text, "V2.3 - Resilient Multi-Step Planning")
                 self.assertTrue(response.headers["content-type"].startswith("text/plain"))
 
     def test_root_serves_the_frontend_adapter(self):
@@ -309,6 +309,8 @@ class LiveStreamTests(unittest.TestCase):
 
     def test_system_prompt_maps_title_text_and_h1_to_extraction_actions(self):
         self.assertIn(f"no more than {main.MAX_ACTIONS} steps", main.SYSTEM_PROMPT)
+        self.assertIn("every intermediate transition explicitly", main.SYSTEM_PROMPT)
+        self.assertIn("visible Shopping Cart link -> click Checkout", main.SYSTEM_PROMPT)
         self.assertIn("target 'page title' (read page.title()", main.SYSTEM_PROMPT)
         self.assertIn("target 'css:h1'", main.SYSTEM_PROMPT)
         self.assertIn("'page text'", main.SYSTEM_PROMPT)
