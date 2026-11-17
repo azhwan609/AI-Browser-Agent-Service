@@ -28,7 +28,7 @@ class LiveStreamTests(unittest.TestCase):
                 response = self.client.get(path)
 
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.text, "V2.3 - Resilient Multi-Step Planning")
+                self.assertEqual(response.text, "V2.4 - Product-Scoped Cart Actions")
                 self.assertTrue(response.headers["content-type"].startswith("text/plain"))
 
     def test_root_serves_the_frontend_adapter(self):
@@ -307,10 +307,30 @@ class LiveStreamTests(unittest.TestCase):
         self.assertEqual(calls[1].kwargs["response_format"], {"type": "json_object"})
         client.close.assert_called_once()
 
+    def test_scoped_click_locator_selects_control_inside_named_product(self):
+        item = MagicMock()
+        item.count = AsyncMock(return_value=1)
+        container = MagicMock()
+        item.locator.return_value = container
+        button = MagicMock()
+        button.count = AsyncMock(return_value=1)
+        container.get_by_role.return_value = button
+        page = MagicMock()
+        page.get_by_text.return_value.first = item
+
+        locator = asyncio.run(
+            main._scoped_click_locator(page, "Add to cart", "Sauce Labs Backpack")
+        )
+
+        self.assertIs(locator, button.first)
+        container.get_by_role.assert_called_once_with("button", name="Add to cart", exact=True)
+
     def test_system_prompt_maps_title_text_and_h1_to_extraction_actions(self):
         self.assertIn(f"no more than {main.MAX_ACTIONS} steps", main.SYSTEM_PROMPT)
         self.assertIn("every intermediate transition explicitly", main.SYSTEM_PROMPT)
         self.assertIn("visible Shopping Cart link -> click Checkout", main.SYSTEM_PROMPT)
+        self.assertIn("add only products the user explicitly named, once each", main.SYSTEM_PROMPT)
+        self.assertIn("click.value", main.SYSTEM_PROMPT)
         self.assertIn("target 'page title' (read page.title()", main.SYSTEM_PROMPT)
         self.assertIn("target 'css:h1'", main.SYSTEM_PROMPT)
         self.assertIn("'page text'", main.SYSTEM_PROMPT)
