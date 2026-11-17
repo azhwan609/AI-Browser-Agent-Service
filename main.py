@@ -30,7 +30,7 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 12
 MAX_EXTRACT_CHARS = 4_000
-VERSION_TAG = "V2.5 - Safe Cart Flow Validation"
+VERSION_TAG = "V2.6 - Safe Cart Flow Validation"
 BROWSER_ACTION_RE = re.compile(
     r"\b(?:go\s+to|navigate(?:\s+to)?|visit|browse(?:\s+to)?|click|fill|"
     r"type\s+(?:into|in)|enter\s+(?:into|in)|submit|extract|scrape|"
@@ -160,19 +160,23 @@ def _enforce_requested_extraction(plan: BrowserPlan, task: str) -> BrowserPlan:
     return plan.model_copy(update={"steps": steps})
 
 
-def _validate_requested_cart_items(plan: BrowserPlan, task: str) -> None:
-    """Reject unrequested or duplicate product additions before opening a browser."""
+def _normalize_requested_cart_items(plan: BrowserPlan, task: str) -> BrowserPlan:
+    """Keep only unique, explicitly requested product additions in a browser plan."""
     task_tokens = set(re.findall(r"[^\W_]+", task.casefold(), flags=re.UNICODE))
     generic_tokens = {"sauce", "labs", "add", "to", "cart", "basket", "product", "item", "the", "a", "an"}
     added_items: set[frozenset[str]] = set()
+    normalized_steps: list[BrowserAction] = []
+    skipped_additions = 0
 
     for step in plan.steps:
         if step.action != "click" or not re.search(
             r"\badd\s+to\s+(?:cart|basket)\b", step.target, re.IGNORECASE
         ):
+            normalized_steps.append(step)
             continue
         title = " ".join(step.value.split())
         if not title:
+            normalized_steps.append(step)
             continue  # The executor rejects ambiguous repeated buttons on the page.
         item_tokens = {
             token
@@ -180,11 +184,25 @@ def _validate_requested_cart_items(plan: BrowserPlan, task: str) -> None:
             if token not in generic_tokens and len(token) > 2
         }
         if not item_tokens.intersection(task_tokens):
-            raise ValueError("The plan tried to add a product that you did not name.")
+            skipped_additions += 1
+            continue
         item_key = frozenset(item_tokens)
         if item_key in added_items:
-            raise ValueError("The plan tried to add the same product more than once.")
+            skipped_additions += 1
+            continue
         added_items.add(item_key)
+        normalized_steps.append(step)
+
+    if skipped_additions and not any(
+        step.action == "click"
+        and re.search(r"\badd\s+to\s+(?:cart|basket)\b", step.target, re.IGNORECASE)
+        for step in normalized_steps
+    ):
+        raise ValueError("I couldn't safely match the requested product to an add-to-cart action.")
+    if skipped_additions:
+        logger.info("Removed %s unrelated or duplicate cart action(s) from the browser plan", skipped_additions)
+        return plan.model_copy(update={"steps": normalized_steps})
+    return plan
 
 
 class ExecuteResponse(BaseModel):
@@ -969,7 +987,7 @@ async def execute(
     if browser_task:
         try:
             plan = _enforce_requested_extraction(plan, payload.task)
-            _validate_requested_cart_items(plan, payload.task)
+            plan = _normalize_requested_cart_items(plan, payload.task)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -1075,7 +1093,7 @@ async def _execute_stream_events(payload: ExecuteRequest, profile_owner: str | N
     if browser_task:
         try:
             plan = _enforce_requested_extraction(plan, payload.task)
-            _validate_requested_cart_items(plan, payload.task)
+            plan = _normalize_requested_cart_items(plan, payload.task)
         except ValueError as exc:
             yield _sse_event("error", {"message": str(exc)})
             return
