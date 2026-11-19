@@ -749,7 +749,14 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
 <dialog id="login-credentials-dialog" aria-labelledby="login-dialog-title">
   <form method="dialog" id="login-credentials-form">
     <h2 id="login-dialog-title">Sign in to continue</h2>
-    <p>Credentials are sent separately from your prompt. You may opt to remember them encrypted on this device for this site; they are never saved on Render.</p>
+    <p>Choose when to provide sign-in details. The live browser stays read-only; the agent fills only recognized username and password fields.</p>
+    <div id="login-mode-choice" class="login-mode-choice">
+      <button type="button" id="login-mode-live">Enter at the live login prompt</button>
+      <button type="button" id="login-mode-prefill">Use saved or enter credentials now</button>
+      <button type="button" id="login-dialog-cancel-choice">Cancel task</button>
+    </div>
+    <div id="login-prefill-fields" hidden>
+    <p>Credentials are sent separately from your prompt. If remembered, they are AES-GCM encrypted on this device only and never saved on Render.</p>
     <label for="login-username">Email or username</label>
     <input id="login-username" name="username" type="text" autocomplete="username" required>
     <label for="login-password">Password</label>
@@ -759,6 +766,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     <div class="login-dialog-actions">
       <button type="button" id="login-dialog-cancel">Cancel</button>
       <button type="submit">Continue securely</button>
+    </div>
     </div>
   </form>
 </dialog>
@@ -947,6 +955,8 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
   const style = document.createElement('style');
   style.textContent = `
     .live-browser-panel{position:fixed;z-index:10000;right:16px;top:var(--live-browser-top,86px);bottom:auto;width:min(340px,calc(100vw - 28px));max-height:min(330px,calc(100vh - 150px));overflow:auto;border:1px solid rgba(255,255,255,.96);border-radius:14px;background:#fff;color:#171717;box-shadow:0 20px 52px rgba(0,0,0,.28),0 0 0 1px rgba(255,255,255,.72);backdrop-filter:blur(16px);font:12px/1.45 system-ui,sans-serif}
+    .login-mode-choice{display:grid;gap:9px;margin:16px 0}.login-mode-choice button,.login-dialog-actions button{min-height:42px;padding:10px 13px;border:1px solid #737981;border-radius:8px;background:linear-gradient(180deg,#fff,#e9ebee);color:#17191c;font:650 13px/1.3 system-ui,sans-serif;cursor:pointer}.login-mode-choice button:first-child,.login-dialog-actions button[type=submit]{border-color:#42474d;background:linear-gradient(180deg,#34383e,#171a1e);color:#fff}.login-mode-choice button:last-child{border-color:transparent;background:transparent;color:#60656b}.login-mode-choice button:focus-visible,.login-dialog-actions button:focus-visible{outline:2px solid #75808c;outline-offset:2px}
+    .live-login-box[hidden]{display:none}.live-login-box{padding:11px 12px 12px;border-top:1px solid rgba(255,255,255,.2);background:linear-gradient(180deg,#17191b,#0d0e10)}.live-login-title{margin:0 0 4px;color:#fff;font-size:11px;font-weight:750;letter-spacing:.04em}.live-login-note{margin:0 0 9px;color:#c3c8ce;font-size:9px;line-height:1.45}.live-login-form{display:grid;gap:7px}.live-login-form label{display:grid;gap:4px;color:#dce0e4;font-size:9px;font-weight:650}.live-login-form input{width:100%;min-height:34px;box-sizing:border-box;padding:7px 9px;border:1px solid #666c73;border-radius:6px;background:#f7f8fa;color:#131518;font:12px system-ui,sans-serif}.live-login-form input:focus{outline:2px solid #c6ccd3;outline-offset:1px}.live-login-form button{min-height:35px;margin-top:2px;border:1px solid #f4f5f7;border-radius:6px;background:linear-gradient(180deg,#f8f9fa,#cbd0d6);color:#111316;font:750 10px system-ui,sans-serif;letter-spacing:.05em;cursor:pointer}.live-login-form button:disabled{opacity:.55;cursor:wait}.live-login-message{min-height:14px;margin:0;color:#d6dce2;font-size:9px}.live-login-message.error{color:#ffb5ae}
     .live-browser-panel[hidden]{display:none}.live-browser-head{display:flex;align-items:center;gap:9px;padding:10px 12px;border-bottom:1px solid rgba(20,20,20,.12);background:linear-gradient(90deg,#fff,#f7f7f7 72%)}
     .live-browser-dot{width:7px;height:7px;flex:none;border-radius:50%;background:#d6bb84;box-shadow:0 0 11px rgba(214,187,132,.58);animation:live-monitor-pulse 1.7s ease-in-out infinite}.live-browser-title{flex:1;color:#171717;font-size:10px;font-weight:750;letter-spacing:.16em;text-transform:uppercase}.live-browser-badge{border:1px solid rgba(25,25,25,.22);border-radius:999px;padding:3px 7px;color:#333;font-size:8px;font-weight:700;letter-spacing:.12em}.live-browser-close{border:0;background:transparent;color:#333;font-size:20px;line-height:1;cursor:pointer;padding:0 2px;transition:color .15s ease}.live-browser-close:hover{color:#000}.live-browser-close:focus-visible{outline:2px solid #555;border-radius:4px}
     .live-browser-frame{display:block;width:100%;max-height:184px;aspect-ratio:16/10;object-fit:contain;background:#fff;opacity:0;transition:opacity .22s ease}.live-browser-panel.has-frame .live-browser-frame{opacity:1}.live-browser-empty{position:relative;display:grid;place-items:center;width:100%;min-height:148px;max-height:184px;aspect-ratio:16/10;overflow:hidden;color:#444;background:#fff}.live-browser-empty:after{content:'';position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(180deg,transparent 0 5px,rgba(0,0,0,.025) 6px)}.live-browser-init{position:relative;z-index:1;display:flex;align-items:center;gap:10px;padding:16px;color:#555;font-size:9px;font-weight:650;letter-spacing:.12em;text-transform:uppercase}.live-browser-spinner{width:13px;height:13px;flex:none;border:1px solid rgba(0,0,0,.18);border-top-color:#555;border-radius:50%;animation:live-monitor-spin .8s linear infinite}
@@ -978,7 +988,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
   document.head.appendChild(style);
   const panel=document.createElement('section');
   panel.className='live-browser-panel'; panel.hidden=true; panel.setAttribute('aria-label','Live Browser');
-  panel.innerHTML='<div class="live-browser-head"><span class="live-browser-dot" aria-hidden="true"></span><span class="live-browser-title">Live Browser</span><span class="live-browser-badge">LIVE</span><button class="live-browser-close" type="button" aria-label="Close Live Browser">×</button></div><div class="live-browser-toolbar"><span class="live-browser-secure" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg></span><span class="live-browser-domain">Secure browser session</span><span class="live-browser-engine">CHROMIUM</span></div><div class="live-browser-empty"><div class="live-browser-init"><span class="live-browser-spinner" aria-hidden="true"></span><span>Preparing browser session…</span></div></div><div class="live-browser-status" role="status" aria-live="polite">Ready</div>';
+  panel.innerHTML='<div class="live-browser-head"><span class="live-browser-dot" aria-hidden="true"></span><span class="live-browser-title">Live Browser</span><span class="live-browser-badge">LIVE</span><button class="live-browser-close" type="button" aria-label="Close Live Browser">×</button></div><div class="live-browser-toolbar"><span class="live-browser-secure" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg></span><span class="live-browser-domain">Secure browser session</span><span class="live-browser-engine">CHROMIUM</span></div><div class="live-browser-empty"><div class="live-browser-init"><span class="live-browser-spinner" aria-hidden="true"></span><span>Preparing browser session…</span></div></div><div class="live-login-box" hidden aria-live="polite"></div><div class="live-browser-status" role="status" aria-live="polite">Ready</div>';
   document.body.appendChild(panel);
   const composer=document.querySelector('.composer-wrap');
   function positionPanel(){const rect=composer&&composer.getBoundingClientRect();const topbar=document.querySelector('#metal-appbar');const topRect=topbar&&topbar.getBoundingClientRect();const top=Math.max(64,(topRect?topRect.bottom:72)+10);panel.style.setProperty('--live-browser-top',top+'px');if(rect)panel.style.setProperty('--live-browser-composer-top',rect.top+'px')}
@@ -986,10 +996,47 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
   if(window.ResizeObserver&&composer)new ResizeObserver(positionPanel).observe(composer);
   const status=panel.querySelector('.live-browser-status');
   const badge=panel.querySelector('.live-browser-badge');
+  const liveLoginBox=panel.querySelector('.live-login-box');
   function safePageLink(raw){if(typeof raw!=='string'||!raw.trim())return '';try{const url=new URL(raw);if((url.protocol!=='http:'&&url.protocol!=='https:')||url.username||url.password)return '';const sensitive=/(token|secret|pass(?:word|wd)?|api[_-]?key|access[_-]?key|authorization|auth|session|cookie|jwt|code|credential|state)/i;for(const key of Array.from(url.searchParams.keys()))if(sensitive.test(key))url.searchParams.delete(key);if(sensitive.test(url.hash))url.hash='';return url.href}catch(_){return ''}}
   let terminalEventReceived=false;
-  panel.querySelector('.live-browser-close').addEventListener('click',()=>{panel.hidden=true});
+  let activeLoginToken=null;
+  function clearLiveLoginPrompt(){
+    activeLoginToken=null;panel.removeAttribute('data-awaiting-login');
+    if(liveLoginBox){liveLoginBox.replaceChildren();liveLoginBox.hidden=true;}
+  }
+  function showLiveLoginPrompt(data){
+    const token=String(data.session_token||'');
+    if(!/^[A-Za-z0-9_-]{40,64}$/.test(token))throw new Error('The live sign-in prompt was invalid. Please retry the task.');
+    activeLoginToken=token;panel.dataset.awaitingLogin='true';liveLoginBox.hidden=false;
+    liveLoginBox.innerHTML='<h3 class="live-login-title">Sign in on the live browser</h3><p class="live-login-note">These details are sent only to this active task and are not saved in the device vault. The agent fills only the recognized username and password fields.</p><form class="live-login-form"><label>Email or username<input name="username" type="text" autocomplete="username" required maxlength="320"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1000"></label><button type="submit">Send securely and continue</button><p class="live-login-message" role="status" aria-live="polite"></p></form>';
+    const form=liveLoginBox.querySelector('form'),username=form.elements.username,password=form.elements.password,button=form.querySelector('button'),message=form.querySelector('.live-login-message');
+    form.addEventListener('submit',async function(event){
+      event.preventDefault();if(!activeLoginToken||button.disabled)return;
+        const submittedToken=activeLoginToken;let submittedUsername=username.value,submittedPassword=password.value;
+      button.disabled=true;message.classList.remove('error');message.textContent='Sending to this browser task…';
+      try{
+        const endpoint=new URL('/execute/stream/login',window.location.href);
+        const response=await fetch(endpoint.href,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({session_token:submittedToken,username:submittedUsername,password:submittedPassword})});
+        let result={};try{result=await response.json()}catch(_){}
+        if(!response.ok||result.accepted!==true){
+          username.value='';password.value='';
+          if(response.status===409||response.status===410){activeLoginToken=null;message.textContent=String(result.detail||'This sign-in prompt expired. Retry the task.');message.classList.add('error');button.disabled=true;}
+          else{message.textContent=String(result.detail||'Could not send. Re-enter your details and try once more.');message.classList.add('error');button.disabled=false;}
+          return;
+        }
+        username.value='';password.value='';activeLoginToken=null;panel.removeAttribute('data-awaiting-login');
+        liveLoginBox.replaceChildren();liveLoginBox.innerHTML='<p class="live-login-message">Details sent. The browser is continuing…</p>';
+        status.textContent='Sign-in details submitted; continuing the task…';
+      }catch(_){
+        username.value='';password.value='';message.textContent='Network error. Re-enter your details and retry before the prompt expires.';message.classList.add('error');button.disabled=false;
+      }finally{submittedUsername='';submittedPassword='';}
+    });
+    status.textContent='Waiting for your sign-in details in this panel…';
+    username.focus({preventScroll:true});
+  }
+  panel.querySelector('.live-browser-close').addEventListener('click',()=>{if(activeLoginToken){status.textContent='Enter your sign-in details here to continue.';return}panel.hidden=true});
   function showPanel(){
+    clearLiveLoginPrompt();
     panel.hidden=false;panel.classList.remove('done','failed','has-frame');badge.textContent='LIVE';
     const currentFrame=panel.querySelector('img.live-browser-frame');
     if(currentFrame){const empty=document.createElement('div');empty.className='live-browser-empty';empty.innerHTML='<div class="live-browser-init"><span class="live-browser-spinner" aria-hidden="true"></span><span>Preparing browser session…</span></div>';currentFrame.replaceWith(empty)}
@@ -1008,8 +1055,9 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
       let img=panel.querySelector('img.live-browser-frame');
       if(!img){img=document.createElement('img');img.className='live-browser-frame';img.alt='Live screenshot of the Playwright browser';panel.querySelector('.live-browser-empty')?.replaceWith(img)}
       img.onload=()=>panel.classList.add('has-frame');img.src=data.image;
-    } else if(name==='complete'){terminalEventReceived=true;window.__liveBrowserResult=data;panel.classList.add('done');badge.textContent='DONE';status.textContent='Task complete';const finalUrl=safePageLink(data.current_url);if(finalUrl){const link=document.createElement('a');link.className='live-browser-page-link';link.href=finalUrl;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Open page';status.appendChild(link);const domain=panel.querySelector('.live-browser-domain');if(domain)domain.textContent=new URL(finalUrl).hostname;}}
-    else if(name==='error'){terminalEventReceived=true;panel.classList.add('failed');badge.textContent='ATTENTION';throw new Error(String(data.message||'The browser task failed.'));}
+    } else if(name==='login_required'){showLiveLoginPrompt(data);}
+    else if(name==='complete'){terminalEventReceived=true;clearLiveLoginPrompt();window.__liveBrowserResult=data;panel.classList.add('done');badge.textContent='DONE';status.textContent='Task complete';const finalUrl=safePageLink(data.current_url);if(finalUrl){const link=document.createElement('a');link.className='live-browser-page-link';link.href=finalUrl;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Open page';status.appendChild(link);const domain=panel.querySelector('.live-browser-domain');if(domain)domain.textContent=new URL(finalUrl).hostname;}}
+    else if(name==='error'){terminalEventReceived=true;clearLiveLoginPrompt();panel.classList.add('failed');badge.textContent='ATTENTION';throw new Error(String(data.message||'The browser task failed.'));}
   }
   function parseEvent(raw){
     if(!raw||raw.startsWith(':'))return;
@@ -1067,21 +1115,31 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     const dialog=document.getElementById('login-credentials-dialog'),form=document.getElementById('login-credentials-form');
     const username=document.getElementById('login-username'),password=document.getElementById('login-password');
     const remember=document.getElementById('login-remember'),status=document.getElementById('login-dialog-status');
-    const cancel=document.getElementById('login-dialog-cancel'),origin=loginOrigin(task);
+    const cancel=document.getElementById('login-dialog-cancel'),cancelChoice=document.getElementById('login-dialog-cancel-choice');
+    const choice=document.getElementById('login-mode-choice'),prefill=document.getElementById('login-prefill-fields');
+    const manualButton=document.getElementById('login-mode-live'),prefillButton=document.getElementById('login-mode-prefill');
+    const origin=loginOrigin(task);
     username.value='';password.value='';remember.checked=false;status.textContent='';
     remember.disabled=!origin||!window.isSecureContext||!window.indexedDB||!window.crypto||!crypto.subtle;
-    if(remember.disabled)status.textContent=origin?'Encrypted storage is unavailable; this run can continue without saving.':'Add the site URL to the task to enable site-specific encrypted remembrance.';
-    if(origin&&!remember.disabled){try{const saved=await readDeviceLogin(origin);if(saved){username.value=saved.username||'';password.value=saved.password||'';remember.checked=true;status.textContent='Encrypted sign-in found for '+new URL(origin).hostname+'.'}}catch(_){status.textContent='Could not unlock saved sign-in; enter it again or continue without remembrance.'}}
-    dialog.showModal();username.focus();
+    choice.hidden=false;prefill.hidden=true;
+    dialog.showModal();manualButton.focus();
     return new Promise(function(resolve){
-      function cleanup(result){dialog.close();form.removeEventListener('submit',submit);cancel.removeEventListener('click',cancelRequest);dialog.removeEventListener('cancel',cancelRequest);resolve(result)}
-      async function submit(event){event.preventDefault();const result={username:username.value,password:password.value};
-        try{if(remember.checked)await saveDeviceLogin(origin,result);else if(origin)await forgetDeviceLogin(origin)}
+      let prefillSelected=false;
+      function cleanup(result){dialog.close();form.removeEventListener('submit',submit);cancel.removeEventListener('click',cancelRequest);cancelChoice.removeEventListener('click',cancelRequest);manualButton.removeEventListener('click',chooseManual);prefillButton.removeEventListener('click',choosePrefill);dialog.removeEventListener('cancel',cancelRequest);resolve(result)}
+      function chooseManual(){username.value='';password.value='';cleanup({mode:'manual'})}
+      async function choosePrefill(){
+        if(prefillSelected)return;prefillSelected=true;choice.hidden=true;prefill.hidden=false;
+        if(remember.disabled)status.textContent=origin?'Encrypted storage is unavailable; this run can continue without saving.':'Add the site URL to the task to enable site-specific encrypted remembrance.';
+        if(origin&&!remember.disabled){try{const saved=await readDeviceLogin(origin);if(saved){username.value=saved.username||'';password.value=saved.password||'';remember.checked=true;status.textContent='Encrypted sign-in found for '+new URL(origin).hostname+'.'}}catch(_){status.textContent='Could not unlock saved sign-in; enter it again or continue without remembrance.'}}
+        username.focus();
+      }
+      async function submit(event){event.preventDefault();const result={mode:'prefill',username:username.value,password:password.value};
+        try{if(remember.checked)await saveDeviceLogin(origin,{username:result.username,password:result.password});else if(origin)await forgetDeviceLogin(origin)}
         catch(_){status.textContent='Could not update encrypted device storage. Uncheck remembrance to continue without saving.';return}
         username.value='';password.value='';cleanup(result)
       }
       function cancelRequest(event){if(event)event.preventDefault();username.value='';password.value='';cleanup(null)}
-      form.addEventListener('submit',submit);cancel.addEventListener('click',cancelRequest);dialog.addEventListener('cancel',cancelRequest,{once:true});
+      form.addEventListener('submit',submit);cancel.addEventListener('click',cancelRequest);cancelChoice.addEventListener('click',cancelRequest);manualButton.addEventListener('click',chooseManual);prefillButton.addEventListener('click',choosePrefill);dialog.addEventListener('cancel',cancelRequest,{once:true});
     });
   }
   window.ShiwaUI.connect({
@@ -1090,8 +1148,9 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
       if(payload.files&&payload.files.length)throw new Error('File attachments are not supported by this backend yet.');
       const task=(payload.text||'').trim();if(!task)return 'Please enter a task for the agent.';
       const loginIntent=/\b(?:log\s*(?:in|into)|login|sign\s*(?:in|into)|sign-in|authenticate)\b|(?:وارد\s*شو|وارد\s*حساب|لاگین|ورود\s*به\s*حساب)/i.test(task);
-      let credentials=null;
-      if(loginIntent){credentials=await requestLoginCredentials(task);if(!credentials)return 'Login canceled. Your credentials were not sent.';}
+      let loginChoice=null,credentials=null;
+      if(loginIntent){loginChoice=await requestLoginCredentials(task);if(!loginChoice)return 'Login canceled. Your credentials were not sent.';if(loginChoice.mode==='prefill')credentials={username:loginChoice.username,password:loginChoice.password};}
+      const manualLogin=!!loginChoice&&loginChoice.mode==='manual';
       terminalEventReceived=false;window.__liveBrowserResult=null;
       try{
         // This app uses same-origin HTTP streaming (SSE), not WebSockets. URL resolution
@@ -1099,7 +1158,9 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
         const endpoint=new URL('/execute/stream',window.location.href);
         let response;
         try{
-          response=await fetch(endpoint.href,{method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify({task,login_username:credentials&&credentials.username,login_password:credentials&&credentials.password})});
+          const requestBody={task,manual_login:manualLogin};
+          if(credentials){requestBody.login_username=credentials.username;requestBody.login_password=credentials.password;}
+          response=await fetch(endpoint.href,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify(requestBody)});
         }catch(error){
           throw new Error('Could not reach '+endpoint.origin+'/execute/stream: '+(error&&error.message||'network request failed'));
         }
@@ -1112,8 +1173,8 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
         const answer=(typeof result.output==='string'?result.output:'').trim();
         const pageTitle=(typeof result.page_title==='string'?result.page_title:'').trim();
         return answer||pageTitle||'The task finished, but I couldn’t find an answer on that page.';
-      }catch(error){panel.classList.add('failed');status.textContent=error.message||'Task failed';throw error}
-      finally{if(credentials){credentials.username='';credentials.password='';credentials=null}}
+      }catch(error){clearLiveLoginPrompt();panel.classList.add('failed');status.textContent=error.message||'Task failed';throw error}
+      finally{clearLiveLoginPrompt();if(credentials){credentials.username='';credentials.password='';credentials=null}if(loginChoice&&loginChoice.mode==='prefill'){loginChoice.username='';loginChoice.password='';loginChoice=null}}
     }
   });
 })();</script>

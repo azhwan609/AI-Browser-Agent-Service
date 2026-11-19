@@ -2,10 +2,12 @@
 
 import asyncio
 import base64
+from dataclasses import dataclass
 import json
 import logging
 import os
 import re
+import secrets
 from collections import deque
 from pathlib import Path
 from typing import Literal
@@ -14,7 +16,7 @@ from urllib.parse import urljoin, urlsplit
 # Match the package-local browser location used by the Render build command.
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from groq import Groq
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -30,7 +32,7 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 12
 MAX_EXTRACT_CHARS = 4_000
-VERSION_TAG = "V3.1 - Device-Encrypted Login Memory"
+VERSION_TAG = "V3.2 - Live Manual Login Handoff"
 BROWSER_ACTION_RE = re.compile(
     r"\b(?:go\s+to|navigate(?:\s+to)?|visit|browse(?:\s+to)?|click|fill|"
     r"type\s+(?:into|in)|enter\s+(?:into|in)|submit|extract|scrape|"
@@ -69,6 +71,7 @@ def _requires_browser(task: str) -> bool:
         BROWSER_ACTION_RE.search(task)
         or OPEN_SITE_RE.search(task)
         or (SITE_REFERENCE_RE.search(task) and PAGE_EXTRACTION_RE.search(task))
+        or (SITE_REFERENCE_RE.search(task) and _is_login_intent(task))
         or (
             (SITE_REFERENCE_RE.search(task) or PERSIAN_SITE_RE.search(task))
             and (PERSIAN_OPERATION_RE.search(task) or PERSIAN_EXTRACTION_RE.search(task))
@@ -101,6 +104,24 @@ class ExecuteRequest(BaseModel):
     profile_id: str | None = Field(default=None, max_length=80)
     login_username: str | None = Field(default=None, max_length=320)
     login_password: str | None = Field(default=None, max_length=1_000)
+    manual_login: bool = False
+
+
+class ManualLoginSubmission(BaseModel):
+    """One-time credentials submitted only to a paused live browser task."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_token: str = Field(min_length=32, max_length=100)
+    username: str = Field(min_length=1, max_length=320)
+    password: str = Field(min_length=1, max_length=1_000)
+
+
+@dataclass
+class ManualLoginWaiter:
+    future: asyncio.Future
+    expires_at: float
+    claimed: bool = False
 
 
 class BrowserAction(BaseModel):
@@ -128,6 +149,21 @@ def _login_field_kind(target: str) -> str | None:
     if re.search(r"\b(?:email|e-mail|username|user\s*name|login|ایمیل|نام\s*کاربری)\b", target, re.IGNORECASE):
         return "username"
     return None
+
+
+def _clear_planned_login_values(plan: BrowserPlan) -> BrowserPlan:
+    """Ensure manual-mode credentials can only enter through the one-time handoff."""
+    return BrowserPlan(
+        goal=plan.goal,
+        steps=[
+            BrowserAction(
+                action=step.action,
+                target=step.target,
+                value="" if step.action == "fill" and _login_field_kind(step.target) else step.value,
+            )
+            for step in plan.steps
+        ],
+    )
 
 
 def _is_login_intent(task: str) -> bool:
@@ -415,6 +451,8 @@ should be handled by the browser agent instead."""
 
 GROQ_SEMAPHORE = asyncio.Semaphore(2)
 BROWSER_SEMAPHORE = asyncio.Semaphore(1)
+MANUAL_LOGIN_WAITERS: dict[str, ManualLoginWaiter] = {}
+MANUAL_LOGIN_WAIT_SECONDS = 90
 
 def _vault_or_503() -> IdentityVault:
     try:
@@ -809,10 +847,33 @@ async def _fill_field_locator(page, target: str):
     return None
 
 
+async def _validate_manual_login_field(locator, kind: str) -> dict[str, str | bool]:
+    field = await locator.evaluate(
+        """element => ({
+          tag: element.tagName.toLowerCase(),
+          type: (element.getAttribute('type') || 'text').toLowerCase(),
+          disabled: Boolean(element.disabled),
+          readOnly: Boolean(element.readOnly),
+          autocomplete: (element.getAttribute('autocomplete') || '').toLowerCase()
+        })"""
+    )
+    if (
+        field["tag"] != "input"
+        or field["disabled"]
+        or field["readOnly"]
+        or field["autocomplete"] == "cc-number"
+        or (kind == "password" and field["type"] != "password")
+        or (kind == "username" and field["type"] not in {"text", "email"})
+    ):
+        raise ValueError("The live sign-in form only accepts standard username and password fields.")
+    return field
+
+
 async def _execute_plan(
     plan: BrowserPlan,
     frame_callback=None,
     progress_callback=None,
+    manual_login_callback=None,
     profile_owner: str | None = None,
     profile_id: str | None = None,
 ) -> tuple[str, int, str, str]:
@@ -831,6 +892,7 @@ async def _execute_plan(
             headless=False,
             frame_callback=frame_callback,
             progress_callback=progress_callback,
+            manual_login_callback=manual_login_callback,
         )
     finally:
         try:
@@ -865,6 +927,7 @@ async def _execute_plan_browser(
     headless: bool,
     frame_callback=None,
     progress_callback=None,
+    manual_login_callback=None,
     profile_owner: str | None = None,
     profile_id: str | None = None,
 ) -> tuple[str, int, str, str]:
@@ -876,6 +939,7 @@ async def _execute_plan_browser(
             headless=headless,
             frame_callback=frame_callback,
             progress_callback=progress_callback,
+            manual_login_callback=manual_login_callback,
             profile_owner=profile_owner,
             profile_id=profile_id,
         )
@@ -888,12 +952,14 @@ async def _execute_plan_browser_with_proxy(
     headless: bool,
     frame_callback=None,
     progress_callback=None,
+    manual_login_callback=None,
     profile_owner: str | None = None,
     profile_id: str | None = None,
 ) -> tuple[str, int, str, str]:
     """Execute the fixed action vocabulary in a fresh, anonymous browser context."""
     output_parts: list[str] = []
     completed = 0
+    manual_login_credentials = None
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=headless)
@@ -937,7 +1003,7 @@ async def _execute_plan_browser_with_proxy(
             if progress_callback is not None:
                 await progress_callback({"message": "The page is ready; looking for your answer…"})
 
-            for step in plan.steps:
+            for step_index, step in enumerate(plan.steps):
                 target = step.target.strip()
                 value = step.value
                 if progress_callback is not None:
@@ -1013,7 +1079,7 @@ async def _execute_plan_browser_with_proxy(
                     await locator.click(timeout=10_000)
 
                 elif step.action == "fill":
-                    if not target or not value:
+                    if not target:
                         raise ValueError("A fill action requires a field label and a value.")
                     locator = await _fill_field_locator(page, target)
                     if locator is None:
@@ -1035,7 +1101,39 @@ async def _execute_plan_browser_with_proxy(
                         or field["autocomplete"] == "cc-number"
                     ):
                         raise ValueError("Only enabled, editable standard form fields can be filled.")
+                    if not value:
+                        kind = _login_field_kind(target)
+                        if manual_login_callback is None or kind is None:
+                            raise ValueError("A fill action requires a field label and a value.")
+                        await _validate_manual_login_field(locator, kind)
+                        for future_step in plan.steps[step_index + 1:]:
+                            future_kind = (
+                                _login_field_kind(future_step.target)
+                                if future_step.action == "fill" and not future_step.value
+                                else None
+                            )
+                            if future_kind is None:
+                                continue
+                            future_locator = await _fill_field_locator(page, future_step.target)
+                            if future_locator is not None:
+                                await _validate_manual_login_field(future_locator, future_kind)
+                        if manual_login_credentials is None:
+                            if progress_callback is not None:
+                                await progress_callback({
+                                    "message": "Enter your sign-in details in the live panel to continue…"
+                                })
+                            manual_login_credentials = await manual_login_callback()
+                        value = manual_login_credentials.get(kind, "")
+                        manual_login_credentials[kind] = ""
+                        if not value:
+                            raise ValueError("The live sign-in details were incomplete; please try again.")
+                        locator = await _fill_field_locator(page, target)
+                        if locator is None:
+                            raise ValueError("The sign-in field changed while waiting; please retry the task.")
+                        await _validate_manual_login_field(locator, kind)
                     await locator.fill(value, timeout=10_000)
+                    if manual_login_credentials and not any(manual_login_credentials.values()):
+                        manual_login_credentials = None
 
                 elif step.action == "extract":
                     text = await _extract_page_content(page, target)
@@ -1070,6 +1168,9 @@ async def _execute_plan_browser_with_proxy(
                     vault.touch_activity(profile_owner, profile_id)
                 except Exception:
                     logger.exception("Could not save encrypted browser storage state")
+            if manual_login_credentials is not None:
+                for credential_name in tuple(manual_login_credentials):
+                    manual_login_credentials[credential_name] = ""
             await browser.close()
 
 
@@ -1105,6 +1206,11 @@ async def execute(
     x_profile_admin_key: str | None = Header(default=None),
 ) -> ExecuteResponse:
     """Plan and run a bounded browser task using Groq and Playwright."""
+    if payload.manual_login:
+        raise HTTPException(
+            status_code=400,
+            detail="Manual login is available only through the live browser stream.",
+        )
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise HTTPException(
@@ -1257,9 +1363,21 @@ async def _execute_stream_events(payload: ExecuteRequest, profile_owner: str | N
         try:
             plan = _enforce_requested_extraction(plan, payload.task)
             plan = _normalize_requested_cart_items(plan, payload.task)
-            plan = _apply_login_credentials(
-                plan, payload.login_username, payload.login_password, payload.task
-            )
+            if payload.manual_login:
+                plan = _clear_planned_login_values(plan)
+                if not any(
+                    step.action == "fill" and _login_field_kind(step.target)
+                    for step in plan.steps
+                ):
+                    yield _sse_event(
+                        "error",
+                        {"message": "I couldn’t identify a standard sign-in field on that site. Try a more specific task."},
+                    )
+                    return
+            else:
+                plan = _apply_login_credentials(
+                    plan, payload.login_username, payload.login_password, payload.task
+                )
         except ValueError as exc:
             yield _sse_event("error", {"message": str(exc)})
             return
@@ -1305,6 +1423,36 @@ async def _execute_stream_events(payload: ExecuteRequest, profile_owner: str | N
     async def progress_callback(status: dict) -> None:
         publish("status", status)
 
+    pending_login_token: str | None = None
+
+    async def manual_login_callback() -> dict[str, str]:
+        nonlocal pending_login_token
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        for old_token, old_waiter in list(MANUAL_LOGIN_WAITERS.items()):
+            if old_waiter.expires_at <= now or old_waiter.future.done():
+                MANUAL_LOGIN_WAITERS.pop(old_token, None)
+                if not old_waiter.future.done():
+                    old_waiter.future.cancel()
+        if len(MANUAL_LOGIN_WAITERS) >= 1:
+            raise BrowserBusyError
+        token = secrets.token_urlsafe(32)
+        future = loop.create_future()
+        MANUAL_LOGIN_WAITERS[token] = ManualLoginWaiter(
+            future=future,
+            expires_at=now + MANUAL_LOGIN_WAIT_SECONDS,
+        )
+        pending_login_token = token
+        publish("login_required", {
+            "session_token": token,
+            "expires_in": MANUAL_LOGIN_WAIT_SECONDS,
+        })
+        try:
+            return await asyncio.wait_for(future, timeout=MANUAL_LOGIN_WAIT_SECONDS)
+        finally:
+            MANUAL_LOGIN_WAITERS.pop(token, None)
+            pending_login_token = None
+
     async def run_browser() -> tuple[str, int, str, str]:
         acquired = False
         try:
@@ -1313,11 +1461,17 @@ async def _execute_stream_events(payload: ExecuteRequest, profile_owner: str | N
             except asyncio.TimeoutError as exc:
                 raise BrowserBusyError from exc
             acquired = True
+            executor_kwargs = {
+                "frame_callback": frame_callback,
+                "progress_callback": progress_callback,
+            }
+            if payload.manual_login:
+                executor_kwargs["manual_login_callback"] = manual_login_callback
             if payload.profile_id:
-                plan_call = _execute_plan(plan, frame_callback, progress_callback, profile_owner, payload.profile_id)
-            else:
-                plan_call = _execute_plan(plan, frame_callback, progress_callback)
-            return await asyncio.wait_for(plan_call, timeout=60)
+                executor_kwargs["profile_owner"] = profile_owner
+                executor_kwargs["profile_id"] = payload.profile_id
+            plan_call = _execute_plan(plan, **executor_kwargs)
+            return await asyncio.wait_for(plan_call, timeout=180 if payload.manual_login else 60)
         finally:
             if acquired:
                 BROWSER_SEMAPHORE.release()
@@ -1391,7 +1545,15 @@ async def _execute_stream_events(payload: ExecuteRequest, profile_owner: str | N
             {"message": "I couldn’t complete that browser task. Please try again shortly."},
         )
     finally:
+        if pending_login_token:
+            waiter = MANUAL_LOGIN_WAITERS.pop(pending_login_token, None)
+            if waiter is not None and not waiter.future.done():
+                waiter.future.cancel()
         if worker.done():
+            await asyncio.gather(worker, return_exceptions=True)
+        elif payload.manual_login:
+            # Manual-mode tasks must not outlive the page that can receive credentials.
+            worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
         else:
             # A disconnected client must not cancel the holder before its finally releases
@@ -1406,6 +1568,22 @@ async def execute_stream(
     x_profile_admin_key: str | None = Header(default=None),
 ) -> StreamingResponse:
     """Execute a task and stream screenshot frames as Server-Sent Events."""
+    if payload.manual_login:
+        if not _requires_browser(payload.task) or not _is_login_intent(payload.task):
+            raise HTTPException(
+                status_code=400,
+                detail="Manual login mode requires a browser task that explicitly requests signing in.",
+            )
+        if payload.login_username or payload.login_password:
+            raise HTTPException(
+                status_code=400,
+                detail="Do not include credentials in a manual live-login request.",
+            )
+        if payload.profile_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Manual live-login tasks cannot save browser state to an account profile.",
+            )
     profile_owner = None
     if payload.profile_id:
         _require_profile_admin(x_profile_admin_key)
@@ -1419,3 +1597,43 @@ async def execute_stream(
             "Connection": "keep-alive",
         },
     )
+
+
+@app.post("/execute/stream/login", include_in_schema=False)
+async def submit_manual_login(
+    payload: ManualLoginSubmission,
+    request: Request,
+    response: Response,
+) -> dict[str, bool]:
+    """Resolve one pending login gate; this endpoint accepts no general browser actions."""
+    origin = request.headers.get("origin")
+    host = request.headers.get("host", "")
+    if origin:
+        parsed_origin = urlsplit(origin)
+        production = os.getenv("RENDER", "").lower() == "true" or host.lower().endswith(".onrender.com")
+        if (
+            parsed_origin.scheme not in {"http", "https"}
+            or parsed_origin.netloc.lower() != host.lower()
+            or (production and parsed_origin.scheme != "https")
+        ):
+            raise HTTPException(status_code=403, detail="This login handoff is same-origin only.")
+    if not payload.username.strip():
+        raise HTTPException(status_code=422, detail="A username or email is required.")
+
+    loop = asyncio.get_running_loop()
+    waiter = MANUAL_LOGIN_WAITERS.get(payload.session_token)
+    if waiter is None:
+        raise HTTPException(status_code=410, detail="This sign-in prompt has expired.")
+    if waiter.expires_at <= loop.time():
+        MANUAL_LOGIN_WAITERS.pop(payload.session_token, None)
+        if not waiter.future.done():
+            waiter.future.cancel()
+        raise HTTPException(status_code=410, detail="This sign-in prompt has expired.")
+    if waiter.claimed or waiter.future.done():
+        raise HTTPException(status_code=409, detail="This sign-in prompt was already used.")
+
+    waiter.claimed = True
+    waiter.future.set_result({"username": payload.username, "password": payload.password})
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return {"accepted": True}

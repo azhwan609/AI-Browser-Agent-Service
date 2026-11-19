@@ -26,18 +26,31 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("localhost:8000", self.html)
         self.assertNotIn("127.0.0.1:8000", self.html)
 
-    def test_login_credentials_use_masked_ephemeral_dialog_and_separate_payload_fields(self):
+    def test_login_credentials_use_live_handoff_or_masked_encrypted_prefill(self):
         self.assertIn('id="login-credentials-dialog"', self.html)
         self.assertIn('type="password" autocomplete="current-password"', self.html)
+        self.assertIn('id="login-mode-live"', self.html)
+        self.assertIn("Enter at the live login prompt", self.html)
         self.assertIn("Remember encrypted on this device for this site", self.html)
-        self.assertIn("they are never saved on Render", self.html)
-        self.assertIn("login_username:credentials&&credentials.username", self.html)
-        self.assertIn("login_password:credentials&&credentials.password", self.html)
-        self.assertIn("finally{if(credentials){credentials.username='';credentials.password='';credentials=null}}", self.html)
+        self.assertIn("never saved on Render", self.html)
+        self.assertIn("if(credentials){requestBody.login_username=credentials.username;requestBody.login_password=credentials.password;}", self.html)
+        self.assertIn("manual_login:manualLogin", self.html)
+        self.assertIn("finally{clearLiveLoginPrompt();if(credentials)", self.html)
         self.assertIn("crypto.subtle.generateKey({name:'AES-GCM',length:256},false", self.html)
         self.assertIn("indexedDB.open('shiwa-login-vault-v1',1)", self.html)
         self.assertIn("return /^https?:$/.test(url.protocol)?url.origin:null", self.html)
         self.assertNotIn("localStorage.setItem", self.html)
+
+    def test_live_login_prompt_uses_one_time_post_body_and_masked_password(self):
+        self.assertIn("else if(name==='login_required'){showLiveLoginPrompt(data);}", self.html)
+        self.assertIn("new URL('/execute/stream/login',window.location.href)", self.html)
+        self.assertIn("session_token:submittedToken,username:submittedUsername,password:submittedPassword", self.html)
+        self.assertIn("type=\"password\" autocomplete=\"current-password\" required maxlength=\"1000\"", self.html)
+        self.assertIn("activeLoginToken=null", self.html)
+        self.assertIn('@app.post("/execute/stream/login"', self.backend)
+        self.assertIn("MANUAL_LOGIN_WAIT_SECONDS = 90", self.backend)
+        self.assertIn("if payload.manual_login:", self.backend)
+        self.assertIn('executor_kwargs["manual_login_callback"] = manual_login_callback', self.backend)
 
     def test_live_panel_only_opens_for_browser_tasks(self):
         self.assertIn("if(data.browser_task)showPanel();else panel.hidden=true;", self.html)

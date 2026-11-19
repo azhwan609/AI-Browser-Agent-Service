@@ -4,9 +4,9 @@ A FastAPI service with a single-page chat frontend and a Groq-planned, safety-co
 
 - `GET /` serves `manus-obtima.html`.
 - `GET /profiles` serves the same frontend with its account-profile screen selected.
-- `GET /version` returns the deployment fingerprint `V3.1 - Device-Encrypted Login Memory`; `GET /execute` remains a compatibility alias.
+- `GET /version` returns the deployment fingerprint `V3.2 - Live Manual Login Handoff`; `GET /execute` remains a compatibility alias.
 - `POST /execute` accepts `{"task":"..."}` and returns the JSON response format.
-- `POST /execute/stream` accepts the same payload and streams named Server-Sent Events (`status`, `frame`, `complete`, `error`). Frames are Base64 JPEGs in `data:image/jpeg;base64,...` form. The live-browser panel opens only for browser tasks; ordinary chat returns text without a browser panel.
+- `POST /execute/stream` accepts the same payload and streams named Server-Sent Events (`status`, `frame`, `login_required`, `complete`, `error`). Frames are Base64 JPEGs in `data:image/jpeg;base64,...` form. The live-browser panel opens only for browser tasks; ordinary chat returns text without a browser panel.
 - The default Groq model is `openai/gpt-oss-20b`; set `GROQ_MODEL` to another active model if needed. Set `GROQ_API_KEY` as a secret environment variable in Render. Never commit the key or put it in the HTML.
 
 ## Account profiles
@@ -56,5 +56,7 @@ The management API is: `POST /api/profiles`, `GET /api/profiles`, `GET/PATCH/DEL
 Set `IDENTITY_VAULT_KEY`, `PROFILE_ADMIN_KEY`, and `IDENTITY_VAULT_DIR` as Render secrets/configuration. `IDENTITY_VAULT_KEY` must be a stable Fernet key across restarts. The free Render filesystem is ephemeral and the deployed `render.yaml` now fails closed with `REQUIRE_PERSISTENT_STORAGE=true` until a real mount exists. `render.persistent.yaml` is the paid Render Blueprint with a 1 GB disk at `/var/data`; apply it only after approving the paid plan, or use an external encrypted storage service. The application never silently falls back to ephemeral storage.
 
 Browser-task sign-in has an optional “Remember encrypted on this device” choice. It uses Web Crypto AES-GCM with a non-extractable device key in IndexedDB and stores the encrypted record under the exact HTTPS/HTTP origin from the task. Credentials are never saved on Render; clearing browser/app storage or changing devices removes access. Same-origin script compromise or an unlocked, compromised device can still expose credentials, so users should opt in only on a trusted personal device.
+
+For manual sign-in, choose “Enter at the live login prompt” before starting the task; enter credentials only in the dedicated Live Browser form, not in the natural-language task. The planner receives no form credentials; after the browser reaches a recognized, editable username or password field, it emits one `login_required` event and pauses. The UI posts the values to `/execute/stream/login` with an opaque, one-use token in the request body (never the URL). The pending handoff expires after 90 seconds and is held only in process memory; credentials are not written to the device vault or server profile vault. Manual mode is limited to standard username/email and password inputs. The Live Browser remains a screenshot view—not a general keyboard/mouse remote—and does not handle MFA, CAPTCHA, or consent challenges. Manual mode cannot save persistent browser profile state. Because the handoff registry is process-local, keep this service at one instance/worker; horizontal scaling requires a shared coordination store.
 
 Google connection remains browser-mediated and human-controlled. No Google OAuth client is embedded yet, and the current service does not claim a Google account is connected merely because a page redirected. MFA, CAPTCHA, consent, and account verification must be completed by the user in an approved browser interaction before a profile can be marked active.

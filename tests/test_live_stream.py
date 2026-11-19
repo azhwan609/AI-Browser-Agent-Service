@@ -1,11 +1,13 @@
 import asyncio
 import base64
+import json
 import os
 import socket
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
+from fastapi.responses import Response
 from pydantic import ValidationError
 
 import main
@@ -28,7 +30,7 @@ class LiveStreamTests(unittest.TestCase):
                 response = self.client.get(path)
 
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.text, "V3.1 - Device-Encrypted Login Memory")
+                self.assertEqual(response.text, "V3.2 - Live Manual Login Handoff")
                 self.assertTrue(response.headers["content-type"].startswith("text/plain"))
 
     def test_root_serves_the_frontend_adapter(self):
@@ -61,6 +63,213 @@ class LiveStreamTests(unittest.TestCase):
         self.assertEqual(main._login_field_kind("رمز عبور"), "password")
         self.assertTrue(main._is_login_intent("لطفاً وارد حساب شو"))
         self.assertFalse(main._is_login_intent("صفحه را باز کن"))
+
+    def test_manual_login_plan_discards_any_model_suggested_credentials(self):
+        plan = main.BrowserPlan(goal="Sign in", steps=[
+            main.BrowserAction(action="fill", target="Username", value="model guessed user"),
+            main.BrowserAction(action="fill", target="Password", value="model guessed secret"),
+            main.BrowserAction(action="fill", target="Search", value="keep this query"),
+        ])
+        sanitized = main._clear_planned_login_values(plan)
+        self.assertEqual([step.value for step in sanitized.steps], ["", "", "keep this query"])
+        self.assertEqual(plan.steps[1].value, "model guessed secret")
+
+    def test_manual_login_submission_is_one_use_and_secrets_never_enter_the_token(self):
+        async def scenario():
+            loop = asyncio.get_running_loop()
+            token = "a" * 43
+            future = loop.create_future()
+            main.MANUAL_LOGIN_WAITERS[token] = main.ManualLoginWaiter(future, loop.time() + 30)
+            request = MagicMock()
+            request.headers = {}
+            response = Response()
+            payload = main.ManualLoginSubmission(
+                session_token=token, username="person@example.com", password="temporary secret"
+            )
+            try:
+                accepted = await main.submit_manual_login(payload, request, response)
+                self.assertEqual(accepted, {"accepted": True})
+                self.assertEqual(future.result(), {
+                    "username": "person@example.com", "password": "temporary secret"
+                })
+                self.assertEqual(response.headers["cache-control"], "no-store")
+                with self.assertRaises(Exception) as error:
+                    await main.submit_manual_login(payload, request, Response())
+                self.assertEqual(error.exception.status_code, 409)
+            finally:
+                main.MANUAL_LOGIN_WAITERS.pop(token, None)
+
+        asyncio.run(scenario())
+
+    def test_manual_login_submission_rejects_expired_token(self):
+        async def scenario():
+            loop = asyncio.get_running_loop()
+            token = "b" * 43
+            future = loop.create_future()
+            main.MANUAL_LOGIN_WAITERS[token] = main.ManualLoginWaiter(future, loop.time() - 1)
+            request = MagicMock()
+            request.headers = {}
+            try:
+                with self.assertRaises(Exception) as error:
+                    await main.submit_manual_login(
+                        main.ManualLoginSubmission(session_token=token, username="person", password="secret"),
+                        request,
+                        Response(),
+                    )
+                self.assertEqual(error.exception.status_code, 410)
+                self.assertTrue(future.cancelled())
+                self.assertNotIn(token, main.MANUAL_LOGIN_WAITERS)
+            finally:
+                main.MANUAL_LOGIN_WAITERS.pop(token, None)
+
+        asyncio.run(scenario())
+
+    def test_manual_login_submission_rejects_cross_origin_request(self):
+        async def scenario():
+            loop = asyncio.get_running_loop()
+            token = "c" * 43
+            future = loop.create_future()
+            main.MANUAL_LOGIN_WAITERS[token] = main.ManualLoginWaiter(future, loop.time() + 30)
+            request = MagicMock()
+            request.headers = {"origin": "https://attacker.example", "host": "agent.example"}
+            try:
+                with self.assertRaises(Exception) as error:
+                    await main.submit_manual_login(
+                        main.ManualLoginSubmission(session_token=token, username="person", password="secret"),
+                        request,
+                        Response(),
+                    )
+                self.assertEqual(error.exception.status_code, 403)
+                self.assertFalse(future.done())
+            finally:
+                main.MANUAL_LOGIN_WAITERS.pop(token, None)
+
+        asyncio.run(scenario())
+
+    def test_manual_login_sse_gate_resumes_the_associated_browser_task(self):
+        captured = {}
+        planned = main.BrowserPlan(goal="Sign in", steps=[
+            main.BrowserAction(action="navigate", target="https://example.com/login", value=""),
+            main.BrowserAction(action="fill", target="Username", value="unsafe planner value"),
+            main.BrowserAction(action="fill", target="Password", value="unsafe planner secret"),
+        ])
+
+        async def fake_execute(plan, frame_callback=None, progress_callback=None, manual_login_callback=None, **kwargs):
+            captured["plan"] = plan
+            captured["credentials"] = await manual_login_callback()
+            return "Signed in", len(plan.steps), "Example", "https://example.com/account"
+
+        async def scenario():
+            events = main._execute_stream_events(main.ExecuteRequest(
+                task="Open https://example.com/login and log in", manual_login=True
+            ))
+            with patch.object(main, "_generate_plan_sync", return_value=planned), patch.object(
+                main, "_execute_plan", side_effect=fake_execute
+            ):
+                async for event in events:
+                    if event.startswith("event: login_required"):
+                        data = json.loads(event.split("data: ", 1)[1])
+                        request = MagicMock()
+                        request.headers = {}
+                        await main.submit_manual_login(
+                            main.ManualLoginSubmission(
+                                session_token=data["session_token"],
+                                username="person@example.com",
+                                password="temporary secret",
+                            ),
+                            request,
+                            Response(),
+                        )
+            self.assertEqual([step.value for step in captured["plan"].steps], ["", "", ""])
+            self.assertEqual(captured["credentials"], {
+                "username": "person@example.com", "password": "temporary secret"
+            })
+            self.assertEqual(main.MANUAL_LOGIN_WAITERS, {})
+
+        asyncio.run(scenario())
+
+    def test_manual_login_mode_requires_login_intent_and_rejects_profile_persistence(self):
+        for body in (
+            {"task": "Open https://example.com", "manual_login": True},
+            {"task": "Open https://example.com and log in", "manual_login": True, "profile_id": "p1"},
+            {"task": "Open https://example.com and log in", "manual_login": True, "login_password": "secret"},
+        ):
+            with self.subTest(body=body):
+                response = self.client.post("/execute/stream", json=body)
+                self.assertEqual(response.status_code, 400)
+
+    def test_manual_login_without_recognized_fill_field_returns_safe_error(self):
+        plan = main.BrowserPlan(goal="Navigate only", steps=[
+            main.BrowserAction(action="navigate", target="https://example.com/login", value=""),
+        ])
+        with patch.object(main, "_generate_plan_sync", return_value=plan), patch.object(
+            main, "_execute_plan", new=AsyncMock()
+        ) as browser_execute:
+            response = self.client.post("/execute/stream", json={
+                "task": "Open https://example.com/login and log in", "manual_login": True,
+            })
+        self.assertIn("event: error", response.text)
+        self.assertIn("couldn’t identify a standard sign-in field", response.text)
+        browser_execute.assert_not_awaited()
+
+    def test_manual_login_disconnect_cleans_gate_and_releases_browser_semaphore(self):
+        async def fake_execute(plan, frame_callback=None, progress_callback=None, manual_login_callback=None, **kwargs):
+            await manual_login_callback()
+            return "Done", 1, "Example", "https://example.com/"
+
+        async def scenario():
+            semaphore = asyncio.Semaphore(1)
+            with patch.object(main, "BROWSER_SEMAPHORE", semaphore), patch.object(
+                main, "_generate_plan_sync", return_value=main.BrowserPlan(
+                    goal="Login", steps=[
+                        main.BrowserAction(action="navigate", target="https://example.com/login", value=""),
+                        main.BrowserAction(action="fill", target="Username", value=""),
+                    ]
+                )
+            ), patch.object(main, "_execute_plan", side_effect=fake_execute):
+                events = main._execute_stream_events(main.ExecuteRequest(
+                    task="Open https://example.com/login and log in", manual_login=True
+                ))
+                token = None
+                async for event in events:
+                    if event.startswith("event: login_required"):
+                        token = json.loads(event.split("data: ", 1)[1])["session_token"]
+                        await events.aclose()
+                        break
+                await asyncio.sleep(0.05)
+                self.assertIsNotNone(token)
+                self.assertNotIn(token, main.MANUAL_LOGIN_WAITERS)
+                self.assertEqual(semaphore._value, 1)
+
+        asyncio.run(scenario())
+
+    def test_manual_login_disconnect_before_gate_does_not_create_orphan_waiter(self):
+        async def fake_execute(plan, frame_callback=None, progress_callback=None, manual_login_callback=None, **kwargs):
+            await asyncio.sleep(0.05)
+            await manual_login_callback()
+            return "Done", 1, "Example", "https://example.com/"
+
+        async def scenario():
+            semaphore = asyncio.Semaphore(1)
+            with patch.object(main, "BROWSER_SEMAPHORE", semaphore), patch.object(
+                main, "_generate_plan_sync", return_value=main.BrowserPlan(
+                    goal="Login", steps=[
+                        main.BrowserAction(action="navigate", target="https://example.com/login", value=""),
+                        main.BrowserAction(action="fill", target="Username", value=""),
+                    ]
+                )
+            ), patch.object(main, "_execute_plan", side_effect=fake_execute):
+                events = main._execute_stream_events(main.ExecuteRequest(
+                    task="Open https://example.com/login and log in", manual_login=True
+                ))
+                await anext(events)
+                await anext(events)
+                await events.aclose()
+                await asyncio.sleep(0.02)
+                self.assertEqual(main.MANUAL_LOGIN_WAITERS, {})
+                self.assertEqual(semaphore._value, 1)
+
+        asyncio.run(scenario())
 
     def test_sse_event_format(self):
         event = main._sse_event("status", {"message": "Started"})
@@ -201,6 +410,7 @@ class LiveStreamTests(unittest.TestCase):
         )
         self.assertTrue(main._requires_browser("Go to google.com and tell me the title"))
         self.assertTrue(main._requires_browser("Get the page title from https://example.org"))
+        self.assertTrue(main._requires_browser("Log in to github.com"))
 
     def test_persian_browser_intents_are_routed_without_misclassifying_chat(self):
         self.assertTrue(main._requires_browser("برو به example.com و عنوان صفحه را بگو"))
@@ -536,6 +746,123 @@ class LiveStreamTests(unittest.TestCase):
         proxy = browser.new_context.await_args.kwargs["proxy"]
         self.assertRegex(proxy["server"], r"^http://127\.0\.0\.1:\d+$")
         playwright.chromium.launch.assert_awaited_once_with(headless=False)
+
+    def test_executor_pauses_only_after_validating_login_fields_and_fills_after_resume(self):
+        username_field = {"tag": "input", "type": "text", "disabled": False, "readOnly": False, "autocomplete": "username"}
+        password_field = {"tag": "input", "type": "password", "disabled": False, "readOnly": False, "autocomplete": "current-password"}
+        username = MagicMock()
+        username.evaluate = AsyncMock(side_effect=[username_field, username_field, username_field])
+        username.fill = AsyncMock()
+        password = MagicMock()
+        password.evaluate = AsyncMock(side_effect=[password_field, password_field, password_field, password_field])
+        password.fill = AsyncMock()
+        page = MagicMock()
+        page.set_default_timeout = MagicMock()
+        page.goto = AsyncMock()
+        page.title = AsyncMock(return_value="Sign in")
+        page.url = "https://example.com/login"
+        context = MagicMock()
+        context.route = AsyncMock()
+        context.new_page = AsyncMock(return_value=page)
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.close = AsyncMock()
+        playwright = MagicMock()
+        playwright.chromium.launch = AsyncMock(return_value=browser)
+
+        class PlaywrightManager:
+            async def __aenter__(self):
+                return playwright
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return None
+
+        plan = main.BrowserPlan(goal="Sign in", steps=[
+            main.BrowserAction(action="navigate", target="https://example.com/login", value=""),
+            main.BrowserAction(action="fill", target="Username", value=""),
+            main.BrowserAction(action="fill", target="Password", value=""),
+        ])
+
+        async def scenario():
+            calls = []
+            credential_future = asyncio.get_running_loop().create_future()
+
+            async def wait_for_credentials():
+                calls.append("prompt")
+                return await credential_future
+
+            with patch.object(main, "_is_public_web_url", new=AsyncMock(return_value=True)), patch.object(
+                main, "_capture_frames", new=AsyncMock()
+            ), patch.object(main, "_fill_field_locator", new=AsyncMock(side_effect=[username, password, username, password, password])), patch.object(
+                main, "async_playwright", return_value=PlaywrightManager()
+            ):
+                task = asyncio.create_task(main._execute_plan_browser_with_proxy(
+                    plan,
+                    proxy=MagicMock(url="http://127.0.0.1:12345"),
+                    headless=False,
+                    manual_login_callback=wait_for_credentials,
+                ))
+                await asyncio.sleep(0)
+                self.assertEqual(calls, ["prompt"])
+                username.fill.assert_not_awaited()
+                password.fill.assert_not_awaited()
+                credential_future.set_result({"username": "person@example.com", "password": "temporary secret"})
+                result = await task
+            self.assertEqual(result[2], "Sign in")
+            username.fill.assert_awaited_once_with("person@example.com", timeout=10_000)
+            password.fill.assert_awaited_once_with("temporary secret", timeout=10_000)
+
+        asyncio.run(scenario())
+
+    def test_executor_rejects_non_password_control_without_prompting(self):
+        username_field = {"tag": "input", "type": "text", "disabled": False, "readOnly": False, "autocomplete": "username"}
+        invalid_password_field = {"tag": "input", "type": "search", "disabled": False, "readOnly": False, "autocomplete": ""}
+        username = MagicMock()
+        username.evaluate = AsyncMock(side_effect=[username_field, username_field])
+        password = MagicMock()
+        password.evaluate = AsyncMock(return_value=invalid_password_field)
+        page = MagicMock()
+        page.set_default_timeout = MagicMock()
+        page.goto = AsyncMock()
+        page.title = AsyncMock(return_value="Login")
+        page.url = "https://example.com/login"
+        context = MagicMock()
+        context.route = AsyncMock()
+        context.new_page = AsyncMock(return_value=page)
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.close = AsyncMock()
+        playwright = MagicMock()
+        playwright.chromium.launch = AsyncMock(return_value=browser)
+
+        class PlaywrightManager:
+            async def __aenter__(self):
+                return playwright
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return None
+
+        plan = main.BrowserPlan(goal="Sign in", steps=[
+            main.BrowserAction(action="navigate", target="https://example.com/login", value=""),
+            main.BrowserAction(action="fill", target="Username", value=""),
+            main.BrowserAction(action="fill", target="Password", value=""),
+        ])
+        prompt = AsyncMock(return_value={"username": "user", "password": "secret"})
+
+        async def scenario():
+            with patch.object(main, "_is_public_web_url", new=AsyncMock(return_value=True)), patch.object(
+                main, "_capture_frames", new=AsyncMock()
+            ), patch.object(main, "_fill_field_locator", new=AsyncMock(side_effect=[username, password])), patch.object(
+                main, "async_playwright", return_value=PlaywrightManager()
+            ):
+                with self.assertRaisesRegex(ValueError, "only accepts standard username and password fields"):
+                    await main._execute_plan_browser_with_proxy(
+                        plan, proxy=MagicMock(url="http://127.0.0.1:12345"),
+                        headless=False, manual_login_callback=prompt,
+                    )
+            prompt.assert_not_awaited()
+
+        asyncio.run(scenario())
 
     def test_live_frame_is_captured_after_navigation(self):
         events = []
