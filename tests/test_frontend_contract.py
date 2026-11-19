@@ -48,7 +48,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("composer.getBoundingClientRect()", self.html)
 
     def test_live_browser_has_silver_frame_and_secure_session_toolbar(self):
-        self.assertIn(".live-browser-panel{border:2px solid rgba(248,250,252,.96)", self.html)
+        self.assertIn(".live-browser-panel{border:3px solid #f8f9fa", self.html)
         self.assertIn('class="live-browser-toolbar"', self.html)
         self.assertIn('class="live-browser-engine">CHROMIUM</span>', self.html)
 
