@@ -47,6 +47,19 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("function positionPanel()", self.html)
         self.assertIn("composer.getBoundingClientRect()", self.html)
 
+    def test_live_browser_has_silver_frame_and_secure_session_toolbar(self):
+        self.assertIn(".live-browser-panel{border:2px solid rgba(248,250,252,.96)", self.html)
+        self.assertIn('class="live-browser-toolbar"', self.html)
+        self.assertIn('class="live-browser-engine">CHROMIUM</span>', self.html)
+
+    def test_success_response_links_to_the_visited_page_safely(self):
+        self.assertIn("function safePageLink(raw)", self.html)
+        self.assertIn("result.success===true?safePageLink(result.current_url):''", self.html)
+        self.assertIn("className='live-browser-page-link'", self.html)
+        self.assertIn("className='assistant-page-link'", self.html)
+        self.assertIn("pageLink.rel='noopener noreferrer'", self.html)
+        self.assertIn("private login session is not shared", self.html)
+
     def test_account_profiles_are_a_clear_ui_only_preview(self):
         self.assertIn('@app.get("/profiles"', self.backend)
         self.assertIn('id="metal-appbar"', self.html)

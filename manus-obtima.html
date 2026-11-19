@@ -859,6 +859,8 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     if(d.dataset.finalized==='true')return;d.dataset.finalized='true';d.classList.remove('pending');if(isError)d.classList.add('error');
     var responseText=d.textContent||'';d.textContent='';
     var body=document.createElement('div');body.className='assistant-copy-text';body.textContent=responseText;d.appendChild(body);
+    var rawPageUrl=(!isError&&d.dataset.finalPageUrl)||'';delete d.dataset.finalPageUrl;
+    if(rawPageUrl){try{var pageUrl=new URL(rawPageUrl,window.location.href);if((pageUrl.protocol==='http:'||pageUrl.protocol==='https:')&&!pageUrl.username&&!pageUrl.password){var linkWrap=document.createElement('div');linkWrap.className='assistant-page-link-wrap';var pageLink=document.createElement('a');pageLink.className='assistant-page-link';pageLink.href=pageUrl.href;pageLink.target='_blank';pageLink.rel='noopener noreferrer';pageLink.setAttribute('aria-label','Open the page the agent visited in a new tab');pageLink.textContent='Open visited page';var pageHost=document.createElement('span');pageHost.className='assistant-page-host';pageHost.textContent=pageUrl.hostname;var linkNote=document.createElement('span');linkNote.className='assistant-page-link-note';linkNote.textContent="Opens in a new tab. The agent's private login session is not shared.";linkWrap.appendChild(pageLink);linkWrap.appendChild(pageHost);linkWrap.appendChild(linkNote);d.appendChild(linkWrap);}}catch(_){}}
     var footer=document.createElement('div');footer.className='assistant-footer';
     if(!isError){var done=document.createElement('span');done.className='assistant-done';done.setAttribute('aria-label','Response complete');var check=document.createElement('span');check.className='assistant-done-mark';check.setAttribute('aria-hidden','true');check.textContent='✓';var label=document.createElement('span');label.textContent='Complete';done.appendChild(check);done.appendChild(label);footer.appendChild(done)}
     var button=document.createElement('button');button.type='button';button.className='assistant-copy';button.setAttribute('aria-label','Copy full response');button.title='Copy full response';button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h2"/></svg>';
@@ -951,11 +953,32 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     .live-browser-status{min-height:36px;padding:9px 12px;border-top:1px solid rgba(20,20,20,.12);color:#444;font-size:10px;letter-spacing:.02em;overflow-wrap:anywhere}.live-browser-panel.done .live-browser-dot{background:#64c79a;box-shadow:0 0 10px rgba(100,199,154,.55);animation:none}.live-browser-panel.done .live-browser-badge{color:#9de1bd;border-color:rgba(100,199,154,.35)}.live-browser-panel.failed .live-browser-dot{background:#df7771;box-shadow:0 0 10px rgba(223,119,113,.5);animation:none}.live-browser-panel.failed .live-browser-badge{color:#f0a49d;border-color:rgba(223,119,113,.35)}
     @keyframes live-monitor-spin{to{transform:rotate(360deg)}}@keyframes live-monitor-pulse{50%{opacity:.45;box-shadow:0 0 4px rgba(214,187,132,.28)}}
     @media(max-width:600px){.live-browser-panel{right:12px;top:var(--live-browser-top,64px);bottom:auto;width:min(300px,calc(100vw - 24px));max-height:calc(100dvh - 120px)}.live-browser-frame,.live-browser-empty{max-height:22vh;min-height:100px}}
-    @media(prefers-reduced-motion:reduce){.live-browser-dot,.live-browser-spinner{animation:none}}`;
+    @media(prefers-reduced-motion:reduce){.live-browser-dot,.live-browser-spinner{animation:none}}
+    .live-browser-panel{border:3px solid #f8f9fa;border-radius:16px;background:linear-gradient(155deg,#26282b,#0b0c0e 38px);color:#f4f5f6;box-shadow:0 0 0 1px rgba(255,255,255,.76),0 0 0 4px rgba(227,231,236,.18),0 24px 70px rgba(0,0,0,.68),inset 0 1px 0 #fff;}
+    .live-browser-head{border-bottom:1px solid rgba(255,255,255,.2);background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,.025));}
+    .live-browser-title{color:#f7f8fa;letter-spacing:.18em}.live-browser-badge{border-color:rgba(255,255,255,.42);color:#f3f4f6}
+    .live-browser-close{color:#e6e8eb}.live-browser-close:hover{color:#fff}.live-browser-close:focus-visible{outline-color:#fff}
+    .live-browser-toolbar{display:flex;align-items:center;gap:8px;min-height:30px;padding:0 11px;border-bottom:1px solid rgba(255,255,255,.15);background:linear-gradient(180deg,#17191b,#0d0e10);color:#d8dce1}
+    .live-browser-secure{display:grid;place-items:center;width:13px;height:14px;flex:none;color:#edf0f3}.live-browser-secure svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+    .live-browser-domain{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#d4d8dd;font-size:9px;letter-spacing:.025em}
+    .live-browser-engine{margin-left:auto;flex:none;padding:3px 6px;border:1px solid rgba(255,255,255,.2);border-radius:4px;color:#bfc4ca;font-size:7px;font-weight:750;letter-spacing:.12em}
+    .live-browser-frame{border-left:1px solid rgba(255,255,255,.18);border-right:1px solid rgba(255,255,255,.18);background:#050607}
+    .live-browser-empty{color:#d5d9df;background:radial-gradient(ellipse at 50% 35%,rgba(255,255,255,.075),transparent 48%),linear-gradient(145deg,#181a1d,#090a0c)}
+    .live-browser-empty:after{background:repeating-linear-gradient(180deg,transparent 0 5px,rgba(255,255,255,.026) 6px)}.live-browser-init{color:#d5d9de}
+    .live-browser-spinner{border-color:rgba(242,245,248,.32);border-top-color:#f7f8fa}
+    .live-browser-status{display:flex;align-items:center;flex-wrap:wrap;gap:9px;border-top:1px solid rgba(255,255,255,.2);color:#e1e4e8}
+    .live-browser-page-link{display:inline-flex;align-items:center;gap:5px;margin-left:auto;padding:5px 8px;border:1px solid rgba(245,247,250,.46);border-radius:5px;background:linear-gradient(180deg,rgba(255,255,255,.13),rgba(255,255,255,.045));color:#fff;text-decoration:none;font-size:9px;font-weight:700;letter-spacing:.035em;white-space:nowrap}
+    .live-browser-page-link:hover{background:rgba(255,255,255,.16);border-color:#fff}
+    .assistant-page-link-wrap{display:flex;align-items:center;flex-wrap:wrap;gap:8px 11px;margin:13px 0 3px;padding:10px 12px;border:1px solid rgba(248,250,252,.34);border-radius:9px;background:linear-gradient(115deg,rgba(255,255,255,.09),rgba(255,255,255,.025))}
+    .assistant-page-link{display:inline-flex;align-items:center;gap:7px;color:#f7f8fa;text-decoration:none;font-size:12px;font-weight:750}.assistant-page-link:after{content:'↗';font-size:13px;line-height:1}
+    .assistant-page-link:hover{text-decoration:underline;text-underline-offset:3px}.assistant-page-host{overflow:hidden;max-width:100%;color:#bfc4ca;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+    .assistant-page-link-note{flex-basis:100%;color:#aeb3ba;font-size:9px;line-height:1.45}
+    @media(prefers-reduced-motion:reduce){.live-browser-page-link,.assistant-page-link{transition:none}}
+`;
   document.head.appendChild(style);
   const panel=document.createElement('section');
   panel.className='live-browser-panel'; panel.hidden=true; panel.setAttribute('aria-label','Live Browser');
-  panel.innerHTML='<div class="live-browser-head"><span class="live-browser-dot" aria-hidden="true"></span><span class="live-browser-title">Live Browser</span><span class="live-browser-badge">LIVE</span><button class="live-browser-close" type="button" aria-label="Close Live Browser">×</button></div><div class="live-browser-empty"><div class="live-browser-init"><span class="live-browser-spinner" aria-hidden="true"></span><span>Preparing browser session…</span></div></div><div class="live-browser-status" role="status" aria-live="polite">Ready</div>';
+  panel.innerHTML='<div class="live-browser-head"><span class="live-browser-dot" aria-hidden="true"></span><span class="live-browser-title">Live Browser</span><span class="live-browser-badge">LIVE</span><button class="live-browser-close" type="button" aria-label="Close Live Browser">×</button></div><div class="live-browser-toolbar"><span class="live-browser-secure" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg></span><span class="live-browser-domain">Secure browser session</span><span class="live-browser-engine">CHROMIUM</span></div><div class="live-browser-empty"><div class="live-browser-init"><span class="live-browser-spinner" aria-hidden="true"></span><span>Preparing browser session…</span></div></div><div class="live-browser-status" role="status" aria-live="polite">Ready</div>';
   document.body.appendChild(panel);
   const composer=document.querySelector('.composer-wrap');
   function positionPanel(){const rect=composer&&composer.getBoundingClientRect();const topbar=document.querySelector('#metal-appbar');const topRect=topbar&&topbar.getBoundingClientRect();const top=Math.max(64,(topRect?topRect.bottom:72)+10);panel.style.setProperty('--live-browser-top',top+'px');if(rect)panel.style.setProperty('--live-browser-composer-top',rect.top+'px')}
@@ -963,6 +986,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
   if(window.ResizeObserver&&composer)new ResizeObserver(positionPanel).observe(composer);
   const status=panel.querySelector('.live-browser-status');
   const badge=panel.querySelector('.live-browser-badge');
+  function safePageLink(raw){if(typeof raw!=='string'||!raw.trim())return '';try{const url=new URL(raw);if((url.protocol!=='http:'&&url.protocol!=='https:')||url.username||url.password)return '';const sensitive=/(token|secret|pass(?:word|wd)?|api[_-]?key|access[_-]?key|authorization|auth|session|cookie|jwt|code|credential|state)/i;for(const key of Array.from(url.searchParams.keys()))if(sensitive.test(key))url.searchParams.delete(key);if(sensitive.test(url.hash))url.hash='';return url.href}catch(_){return ''}}
   let terminalEventReceived=false;
   panel.querySelector('.live-browser-close').addEventListener('click',()=>{panel.hidden=true});
   function showPanel(){
@@ -970,7 +994,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     const currentFrame=panel.querySelector('img.live-browser-frame');
     if(currentFrame){const empty=document.createElement('div');empty.className='live-browser-empty';empty.innerHTML='<div class="live-browser-init"><span class="live-browser-spinner" aria-hidden="true"></span><span>Preparing browser session…</span></div>';currentFrame.replaceWith(empty)}
     else{const empty=panel.querySelector('.live-browser-empty');if(empty)empty.innerHTML='<div class="live-browser-init"><span class="live-browser-spinner" aria-hidden="true"></span><span>Preparing browser session…</span></div>'}
-    status.textContent='Connecting to the agent…';
+    status.textContent='Connecting to the agent…';const domain=panel.querySelector('.live-browser-domain');if(domain)domain.textContent='Secure browser session';
   }
   function onEvent(name,data){
     if(name==='status'){
@@ -984,7 +1008,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
       let img=panel.querySelector('img.live-browser-frame');
       if(!img){img=document.createElement('img');img.className='live-browser-frame';img.alt='Live screenshot of the Playwright browser';panel.querySelector('.live-browser-empty')?.replaceWith(img)}
       img.onload=()=>panel.classList.add('has-frame');img.src=data.image;
-    } else if(name==='complete'){terminalEventReceived=true;window.__liveBrowserResult=data;panel.classList.add('done');badge.textContent='DONE';status.textContent='Task complete';}
+    } else if(name==='complete'){terminalEventReceived=true;window.__liveBrowserResult=data;panel.classList.add('done');badge.textContent='DONE';status.textContent='Task complete';const finalUrl=safePageLink(data.current_url);if(finalUrl){const link=document.createElement('a');link.className='live-browser-page-link';link.href=finalUrl;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Open page';status.appendChild(link);const domain=panel.querySelector('.live-browser-domain');if(domain)domain.textContent=new URL(finalUrl).hostname;}}
     else if(name==='error'){terminalEventReceived=true;panel.classList.add('failed');badge.textContent='ATTENTION';throw new Error(String(data.message||'The browser task failed.'));}
   }
   function parseEvent(raw){
@@ -1062,7 +1086,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
   }
   window.ShiwaUI.connect({
     supportsAttachments:false,
-    async send(payload){
+    async send(payload,ctx){
       if(payload.files&&payload.files.length)throw new Error('File attachments are not supported by this backend yet.');
       const task=(payload.text||'').trim();if(!task)return 'Please enter a task for the agent.';
       const loginIntent=/\b(?:log\s*(?:in|into)|login|sign\s*(?:in|into)|sign-in|authenticate)\b|(?:وارد\s*شو|وارد\s*حساب|لاگین|ورود\s*به\s*حساب)/i.test(task);
@@ -1083,10 +1107,11 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
         const result=window.__liveBrowserResult;
         if(!result)return 'The task finished, but no final result was received.';
         window.__liveBrowserResult=null;
+        const finalUrl=result.success===true?safePageLink(result.current_url):'';
+        if(finalUrl&&ctx&&ctx.message)ctx.message.dataset.finalPageUrl=finalUrl;
         const answer=(typeof result.output==='string'?result.output:'').trim();
-        if(answer)return answer;
         const pageTitle=(typeof result.page_title==='string'?result.page_title:'').trim();
-        return pageTitle||'The task finished, but I couldn’t find an answer on that page.';
+        return answer||pageTitle||'The task finished, but I couldn’t find an answer on that page.';
       }catch(error){panel.classList.add('failed');status.textContent=error.message||'Task failed';throw error}
       finally{if(credentials){credentials.username='';credentials.password='';credentials=null}}
     }
