@@ -7,7 +7,7 @@ A FastAPI service with a single-page chat frontend and a Groq-planned, safety-co
 - `GET /version` returns the deployment fingerprint `V3.2 - Live Manual Login Handoff`; `GET /execute` remains a compatibility alias.
 - `POST /execute` accepts `{"task":"..."}` and returns the JSON response format.
 - `POST /execute/stream` accepts the same payload and streams named Server-Sent Events (`status`, `delta`, `frame`, `login_required`, `complete`, `error`). Ordinary chat emits `delta` text chunks as the model generates them; browser frames are Base64 JPEGs in `data:image/jpeg;base64,...` form. The live-browser panel opens only for browser tasks.
-- The default Groq model is `llama-3.3-70b-versatile`. On HTTP 429, or when Groq reports the configured model missing/inaccessible, chat and planning requests retry with `llama-3.1-8b-instant`. `GROQ_MODEL` is configurable; `GROQ_API_KEY` is read only from the service environment and must be configured as a Render secret. Never commit the key or put it in the HTML.
+- The default Groq model is `llama-3.3-70b-versatile`. On HTTP 429, chat and planning first retry with `llama-3.1-8b-instant`; if a model ID is missing/inaccessible, current Groq replacements (`openai/gpt-oss-120b` and `openai/gpt-oss-20b`) are also tried. Groq has retired the requested Llama IDs for free/developer usage, so a replacement may serve the actual response. `GROQ_MODEL` is configurable; `GROQ_API_KEY` is read only from the service environment and must be configured as a Render secret. Never commit the key or put it in the HTML.
 
 ## Account profiles
 

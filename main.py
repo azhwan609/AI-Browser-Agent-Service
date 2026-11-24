@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 FRONTEND_FILE = Path(__file__).with_name("manus-obtima.html")
 DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_REPLACEMENT_MODEL = "openai/gpt-oss-120b"
+GROQ_FAST_REPLACEMENT_MODEL = "openai/gpt-oss-20b"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 12
 MAX_EXTRACT_CHARS = 4_000
@@ -637,27 +639,41 @@ def _is_json_schema_validation_error(error: Exception) -> bool:
     return "json_validate_failed" in message or "failed to validate json" in message
 
 
-def _should_use_groq_fallback(error: Exception, model: str) -> bool:
-    """Fallback on rate limits and unavailable/unauthorized model IDs."""
+def _groq_fallback_candidates(error: Exception, model: str) -> list[str]:
+    """Choose compatible replacements when Groq rate-limits or rejects a model ID."""
     status_code = getattr(error, "status_code", None)
     body = getattr(error, "body", None)
     details = body.get("error") if isinstance(body, dict) else None
     error_code = details.get("code") if isinstance(details, dict) else None
-    return model != FALLBACK_GROQ_MODEL and (
-        status_code == 429 or (status_code == 404 and error_code in {None, "model_not_found"})
-    )
+    is_missing_model = status_code == 404 and error_code in {None, "model_not_found"}
+    if status_code == 429:
+        preferred = [FALLBACK_GROQ_MODEL, GROQ_FAST_REPLACEMENT_MODEL, GROQ_REPLACEMENT_MODEL]
+    elif is_missing_model:
+        preferred = [GROQ_REPLACEMENT_MODEL, GROQ_FAST_REPLACEMENT_MODEL, FALLBACK_GROQ_MODEL]
+    else:
+        return []
+    return [candidate for candidate in preferred if candidate != model]
 
 
 def _create_groq_completion(client, model: str, **kwargs):
-    """Retry with the fast model on primary-model rate limiting or unavailability."""
+    """Try the requested model, then supported alternatives for rate limits or 404s."""
     try:
         return client.chat.completions.create(model=model, **kwargs)
-    except Exception as exc:
-        if not _should_use_groq_fallback(exc, model):
+    except Exception as error:
+        candidates = _groq_fallback_candidates(error, model)
+        if not candidates:
             raise
-        logger.warning("Groq model %s is unavailable (%s); retrying with %s", model,
-                       getattr(exc, "status_code", "unknown"), FALLBACK_GROQ_MODEL)
-        return client.chat.completions.create(model=FALLBACK_GROQ_MODEL, **kwargs)
+        last_error = error
+        for candidate in candidates:
+            logger.warning("Groq model %s is unavailable (%s); trying %s", model,
+                           getattr(last_error, "status_code", "unknown"), candidate)
+            try:
+                return client.chat.completions.create(model=candidate, **kwargs)
+            except Exception as fallback_error:
+                if not _groq_fallback_candidates(fallback_error, candidate):
+                    raise
+                last_error = fallback_error
+        raise last_error
 
 
 def _generate_plan_sync(task: str, api_key: str, model: str) -> BrowserPlan:
@@ -740,23 +756,15 @@ def _generate_chat_stream_sync(task: str, api_key: str, model: str, on_delta) ->
     """Stream response chunks and retry with 8B if the primary returns HTTP 429."""
     client = Groq(api_key=api_key, timeout=40.0, max_retries=0)
     try:
-        def create(selected_model):
-            return client.chat.completions.create(
-                model=selected_model,
-                messages=[
-                    {"role": "system", "content": CHAT_SYSTEM_PROMPT},
-                    {"role": "user", "content": task},
-                ],
-                stream=True,
-            )
-        try:
-            stream = create(model)
-        except Exception as exc:
-            if not _should_use_groq_fallback(exc, model):
-                raise
-            logger.warning("Groq model %s is unavailable (%s); retrying stream with %s",
-                           model, getattr(exc, "status_code", "unknown"), FALLBACK_GROQ_MODEL)
-            stream = create(FALLBACK_GROQ_MODEL)
+        stream = _create_groq_completion(
+            client,
+            model,
+            messages=[
+                {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+                {"role": "user", "content": task},
+            ],
+            stream=True,
+        )
         emitted = False
         for chunk in stream:
             text = chunk.choices[0].delta.content

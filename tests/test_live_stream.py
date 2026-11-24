@@ -390,7 +390,8 @@ class LiveStreamTests(unittest.TestCase):
         browser_execute.assert_not_awaited()
 
     def test_groq_completion_falls_back_on_http_429_and_unavailable_model(self):
-        for status_code in (429, 404):
+        expected_models = {429: "llama-3.1-8b-instant", 404: "openai/gpt-oss-120b"}
+        for status_code, expected_model in expected_models.items():
             with self.subTest(status_code=status_code):
                 client = MagicMock()
                 error = RuntimeError("provider rejected primary model")
@@ -405,7 +406,25 @@ class LiveStreamTests(unittest.TestCase):
                 self.assertIs(result, expected)
                 calls = client.chat.completions.create.call_args_list
                 self.assertEqual(calls[0].kwargs["model"], "llama-3.3-70b-versatile")
-                self.assertEqual(calls[1].kwargs["model"], "llama-3.1-8b-instant")
+                self.assertEqual(calls[1].kwargs["model"], expected_model)
+
+    def test_groq_missing_8b_fallback_uses_current_fast_replacement(self):
+        client = MagicMock()
+        primary_limit = RuntimeError("rate limited")
+        primary_limit.status_code = 429
+        retired = RuntimeError("model missing")
+        retired.status_code = 404
+        retired.body = {"error": {"code": "model_not_found"}}
+        expected = object()
+        client.chat.completions.create.side_effect = [primary_limit, retired, expected]
+
+        result = main._create_groq_completion(client, "llama-3.3-70b-versatile", messages=[])
+
+        self.assertIs(result, expected)
+        calls = client.chat.completions.create.call_args_list
+        self.assertEqual([call.kwargs["model"] for call in calls], [
+            "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-20b"
+        ])
 
     def test_chat_json_route_returns_text_without_starting_browser(self):
         with patch.object(
