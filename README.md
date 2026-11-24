@@ -6,8 +6,8 @@ A FastAPI service with a single-page chat frontend and a Groq-planned, safety-co
 - `GET /profiles` serves the same frontend with its account-profile screen selected.
 - `GET /version` returns the deployment fingerprint `V3.2 - Live Manual Login Handoff`; `GET /execute` remains a compatibility alias.
 - `POST /execute` accepts `{"task":"..."}` and returns the JSON response format.
-- `POST /execute/stream` accepts the same payload and streams named Server-Sent Events (`status`, `frame`, `login_required`, `complete`, `error`). Frames are Base64 JPEGs in `data:image/jpeg;base64,...` form. The live-browser panel opens only for browser tasks; ordinary chat returns text without a browser panel.
-- The default Groq model is `openai/gpt-oss-20b`; set `GROQ_MODEL` to another active model if needed. Set `GROQ_API_KEY` as a secret environment variable in Render. Never commit the key or put it in the HTML.
+- `POST /execute/stream` accepts the same payload and streams named Server-Sent Events (`status`, `delta`, `frame`, `login_required`, `complete`, `error`). Ordinary chat emits `delta` text chunks as the model generates them; browser frames are Base64 JPEGs in `data:image/jpeg;base64,...` form. The live-browser panel opens only for browser tasks.
+- The default Groq model is `llama-3.3-70b-versatile`. On HTTP 429, chat and planning requests retry with `llama-3.1-8b-instant`. `GROQ_MODEL` is configurable; `GROQ_API_KEY` is read only from the service environment and must be configured as a Render secret. Never commit the key or put it in the HTML.
 
 ## Account profiles
 
@@ -21,7 +21,7 @@ The agent does not execute model-generated code. It runs at most twelve allowlis
 python -m pip install -r requirements.txt
 PLAYWRIGHT_BROWSERS_PATH=0 playwright install chromium
 export GROQ_API_KEY=your-groq-api-key
-export GROQ_MODEL=openai/gpt-oss-20b
+export GROQ_MODEL=llama-3.3-70b-versatile
 uvicorn main:app --reload
 ```
 
@@ -39,6 +39,15 @@ Example request (legacy JSON endpoint):
 curl -X POST http://localhost:8000/execute \
   -H 'Content-Type: application/json' \
   -d '{"task":"Open https://example.com and extract the page title"}'
+```
+
+Test the live chat stream directly (replace the host for a local service if needed). `-N` disables curl buffering so `delta` events display as they arrive:
+
+```bash
+curl -N https://ai-browser-agent-service.onrender.com/execute/stream \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream' \
+  -d '{"task":"Explain what an API is in two short sentences."}'
 ```
 
 The browser runs on the service, not in the user's local browser, and each execution starts with a clean context. Configure API credentials in environment variables rather than committing them to source.

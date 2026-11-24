@@ -35,7 +35,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("never saved on Render", self.html)
         self.assertIn("if(credentials){requestBody.login_username=credentials.username;requestBody.login_password=credentials.password;}", self.html)
         self.assertIn("manual_login:manualLogin", self.html)
-        self.assertIn("finally{clearLiveLoginPrompt();if(credentials)", self.html)
+        self.assertIn("finally{streamTextCallback=null;clearLiveLoginPrompt();if(credentials)", self.html)
         self.assertIn("crypto.subtle.generateKey({name:'AES-GCM',length:256},false", self.html)
         self.assertIn("indexedDB.open('shiwa-login-vault-v1',1)", self.html)
         self.assertIn("return /^https?:$/.test(url.protocol)?url.origin:null", self.html)
@@ -100,6 +100,16 @@ class FrontendContractTests(unittest.TestCase):
     def test_incomplete_sse_stream_is_reported_as_an_error(self):
         self.assertIn("if(!terminalEventReceived)throw new Error", self.html)
         self.assertIn("terminalEventReceived=true", self.html)
+
+    def test_chat_sse_deltas_are_rendered_as_they_arrive(self):
+        self.assertIn("else if(name==='delta')", self.html)
+        self.assertIn("streamTextCallback(data.text)", self.html)
+        self.assertIn("_generate_chat_stream_sync", self.backend)
+        self.assertIn('yield _sse_event("delta", {"text": delta})', self.backend)
+
+    def test_render_config_sets_model_and_declares_api_key_as_secret(self):
+        self.assertIn("value: llama-3.3-70b-versatile", self.render_config)
+        self.assertIn("- key: GROQ_API_KEY\n        sync: false", self.render_config)
 
     def test_unsupported_attachments_are_rejected_without_clearing_state(self):
         self.assertIn("supportsAttachments:false", self.html)

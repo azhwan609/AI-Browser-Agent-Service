@@ -11,6 +11,11 @@ services:
     envVars:
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: /ms-playwright
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      # Render stores this as a secret; its value does not belong in Git.
+      - key: GROQ_API_KEY
+        sync: false
 
       # Set these in the Render dashboard; no secret values belong in Git.
       - key: IDENTITY_VAULT_DIR

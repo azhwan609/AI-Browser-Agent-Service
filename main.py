@@ -28,7 +28,8 @@ from identity_vault import IdentityVault, VaultUnavailable, utc_now
 
 logger = logging.getLogger(__name__)
 FRONTEND_FILE = Path(__file__).with_name("manus-obtima.html")
-DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+FALLBACK_GROQ_MODEL = "llama-3.1-8b-instant"
 MAX_TASK_CHARS = 2_000
 MAX_ACTIONS = 12
 MAX_EXTRACT_CHARS = 4_000
@@ -636,6 +637,17 @@ def _is_json_schema_validation_error(error: Exception) -> bool:
     return "json_validate_failed" in message or "failed to validate json" in message
 
 
+def _create_groq_completion(client, model: str, **kwargs):
+    """Retry with the fast fallback only when the primary model is rate-limited."""
+    try:
+        return client.chat.completions.create(model=model, **kwargs)
+    except Exception as exc:
+        if getattr(exc, "status_code", None) != 429 or model == FALLBACK_GROQ_MODEL:
+            raise
+        logger.warning("Groq model %s was rate-limited; retrying with %s", model, FALLBACK_GROQ_MODEL)
+        return client.chat.completions.create(model=FALLBACK_GROQ_MODEL, **kwargs)
+
+
 def _generate_plan_sync(task: str, api_key: str, model: str) -> BrowserPlan:
     """Request a constrained plan, retrying provider JSON-schema failures once."""
     client = Groq(api_key=api_key, timeout=40.0, max_retries=1)
@@ -650,8 +662,9 @@ def _generate_plan_sync(task: str, api_key: str, model: str) -> BrowserPlan:
     json_format = {"type": "json_object"}
 
     def request_plan(response_format):
-        return client.chat.completions.create(
-            model=model,
+        return _create_groq_completion(
+            client,
+            model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": task},
@@ -695,8 +708,9 @@ def _generate_chat_sync(task: str, api_key: str, model: str) -> str:
     """Ask Groq for a direct text response without invoking the browser planner."""
     client = Groq(api_key=api_key, timeout=40.0, max_retries=1)
     try:
-        completion = client.chat.completions.create(
-            model=model,
+        completion = _create_groq_completion(
+            client,
+            model,
             messages=[
                 {"role": "system", "content": CHAT_SYSTEM_PROMPT},
                 {"role": "user", "content": task},
@@ -706,6 +720,38 @@ def _generate_chat_sync(task: str, api_key: str, model: str) -> str:
         if not content or not content.strip():
             raise ValueError("Groq returned an empty chat reply")
         return content.strip()[:4_000]
+    finally:
+        client.close()
+
+
+def _generate_chat_stream_sync(task: str, api_key: str, model: str, on_delta) -> None:
+    """Stream response chunks and retry with 8B if the primary returns HTTP 429."""
+    client = Groq(api_key=api_key, timeout=40.0, max_retries=0)
+    try:
+        def create(selected_model):
+            return client.chat.completions.create(
+                model=selected_model,
+                messages=[
+                    {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+                    {"role": "user", "content": task},
+                ],
+                stream=True,
+            )
+        try:
+            stream = create(model)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) != 429 or model == FALLBACK_GROQ_MODEL:
+                raise
+            logger.warning("Groq model %s was rate-limited; retrying stream with %s", model, FALLBACK_GROQ_MODEL)
+            stream = create(FALLBACK_GROQ_MODEL)
+        emitted = False
+        for chunk in stream:
+            text = chunk.choices[0].delta.content
+            if text:
+                emitted = True
+                on_delta(text)
+        if not emitted:
+            raise ValueError("Groq returned an empty chat reply")
     finally:
         client.close()
 
@@ -1345,10 +1391,26 @@ async def _execute_stream_events(payload: ExecuteRequest, profile_owner: str | N
                 timeout=45,
             )
         else:
-            reply = await asyncio.wait_for(
-                asyncio.to_thread(_generate_chat_sync, payload.task, api_key, model),
-                timeout=45,
-            )
+            loop = asyncio.get_running_loop()
+            deltas: asyncio.Queue[str] = asyncio.Queue()
+            collected: list[str] = []
+            def publish_delta(text: str) -> None:
+                loop.call_soon_threadsafe(deltas.put_nowait, text)
+            stream_task = asyncio.create_task(asyncio.to_thread(
+                _generate_chat_stream_sync, payload.task, api_key, model, publish_delta
+            ))
+            deadline = loop.time() + 45
+            while not stream_task.done() or not deltas.empty():
+                if loop.time() >= deadline:
+                    raise asyncio.TimeoutError
+                try:
+                    delta = await asyncio.wait_for(deltas.get(), timeout=min(0.1, deadline - loop.time()))
+                except asyncio.TimeoutError:
+                    continue
+                collected.append(delta)
+                yield _sse_event("delta", {"text": delta})
+            await stream_task
+            reply = "".join(collected)[:4_000]
     except asyncio.TimeoutError:
         yield _sse_event("error", {"message": "The Groq response timed out."})
         return

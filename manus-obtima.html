@@ -1000,6 +1000,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
   function safePageLink(raw){if(typeof raw!=='string'||!raw.trim())return '';try{const url=new URL(raw);if((url.protocol!=='http:'&&url.protocol!=='https:')||url.username||url.password)return '';const sensitive=/(token|secret|pass(?:word|wd)?|api[_-]?key|access[_-]?key|authorization|auth|session|cookie|jwt|code|credential|state)/i;for(const key of Array.from(url.searchParams.keys()))if(sensitive.test(key))url.searchParams.delete(key);if(sensitive.test(url.hash))url.hash='';return url.href}catch(_){return ''}}
   let terminalEventReceived=false;
   let activeLoginToken=null;
+  let streamTextCallback=null;
   function clearLiveLoginPrompt(){
     activeLoginToken=null;panel.removeAttribute('data-awaiting-login');
     if(liveLoginBox){liveLoginBox.replaceChildren();liveLoginBox.hidden=true;}
@@ -1055,7 +1056,8 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
       let img=panel.querySelector('img.live-browser-frame');
       if(!img){img=document.createElement('img');img.className='live-browser-frame';img.alt='Live screenshot of the Playwright browser';panel.querySelector('.live-browser-empty')?.replaceWith(img)}
       img.onload=()=>panel.classList.add('has-frame');img.src=data.image;
-    } else if(name==='login_required'){showLiveLoginPrompt(data);}
+    } else if(name==='delta'){if(streamTextCallback&&typeof data.text==='string')streamTextCallback(data.text);}
+    else if(name==='login_required'){showLiveLoginPrompt(data);}
     else if(name==='complete'){terminalEventReceived=true;clearLiveLoginPrompt();window.__liveBrowserResult=data;panel.classList.add('done');badge.textContent='DONE';status.textContent='Task complete';const finalUrl=safePageLink(data.current_url);if(finalUrl){const link=document.createElement('a');link.className='live-browser-page-link';link.href=finalUrl;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Open page';status.appendChild(link);const domain=panel.querySelector('.live-browser-domain');if(domain)domain.textContent=new URL(finalUrl).hostname;}}
     else if(name==='error'){terminalEventReceived=true;clearLiveLoginPrompt();panel.classList.add('failed');badge.textContent='ATTENTION';throw new Error(String(data.message||'The browser task failed.'));}
   }
@@ -1152,6 +1154,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
       if(loginIntent){loginChoice=await requestLoginCredentials(task);if(!loginChoice)return 'Login canceled. Your credentials were not sent.';if(loginChoice.mode==='prefill')credentials={username:loginChoice.username,password:loginChoice.password};}
       const manualLogin=!!loginChoice&&loginChoice.mode==='manual';
       terminalEventReceived=false;window.__liveBrowserResult=null;
+      streamTextCallback=ctx&&typeof ctx.stream==='function'?ctx.stream:null;
       try{
         // This app uses same-origin HTTP streaming (SSE), not WebSockets. URL resolution
         // follows the current host and automatically uses HTTPS when the page is HTTPS.
@@ -1174,7 +1177,7 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
         const pageTitle=(typeof result.page_title==='string'?result.page_title:'').trim();
         return answer||pageTitle||'The task finished, but I couldn’t find an answer on that page.';
       }catch(error){clearLiveLoginPrompt();panel.classList.add('failed');status.textContent=error.message||'Task failed';throw error}
-      finally{clearLiveLoginPrompt();if(credentials){credentials.username='';credentials.password='';credentials=null}if(loginChoice&&loginChoice.mode==='prefill'){loginChoice.username='';loginChoice.password='';loginChoice=null}}
+      finally{streamTextCallback=null;clearLiveLoginPrompt();if(credentials){credentials.username='';credentials.password='';credentials=null}if(loginChoice&&loginChoice.mode==='prefill'){loginChoice.username='';loginChoice.password='';loginChoice=null}}
     }
   });
 })();</script>

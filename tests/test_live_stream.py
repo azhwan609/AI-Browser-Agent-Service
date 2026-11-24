@@ -370,22 +370,38 @@ class LiveStreamTests(unittest.TestCase):
         self.assertNotIn("BrowserType.launch", response.text)
         self.assertNotIn("Executable doesn't exist", response.text)
 
-    def test_chat_stream_returns_text_without_starting_browser(self):
-        with patch.object(
-            main, "_generate_chat_sync", return_value="Hello! I'm doing well, thanks for asking."
-        ) as chat_reply, patch.object(main, "_generate_plan_sync") as planner, patch.object(
-            main, "_execute_plan", new=AsyncMock()
-        ) as browser_execute:
+    def test_chat_stream_returns_incremental_text_without_starting_browser(self):
+        def emit_chunks(task, api_key, model, on_delta):
+            on_delta("Hello! ")
+            on_delta("I'm doing well, thanks for asking.")
+        with patch.object(main, "_generate_chat_stream_sync", side_effect=emit_chunks) as chat_reply, patch.object(
+            main, "_generate_plan_sync"
+        ) as planner, patch.object(main, "_execute_plan", new=AsyncMock()) as browser_execute:
             response = self.client.post("/execute/stream", json={"task": "Hello, how are you?"})
 
         self.assertEqual(response.status_code, 200)
+        self.assertIn('event: delta\ndata: {"text": "Hello! "}', response.text)
+        self.assertIn("event: delta\ndata: {\"text\": \"I'm doing well, thanks for asking.\"}", response.text)
         self.assertIn("event: complete", response.text)
-        self.assertIn("Hello! I'm doing well, thanks for asking.", response.text)
         self.assertNotIn("Starting the live browser", response.text)
         self.assertIn("Writing a reply", response.text)
         chat_reply.assert_called_once()
         planner.assert_not_called()
         browser_execute.assert_not_awaited()
+
+    def test_groq_completion_falls_back_on_http_429(self):
+        client = MagicMock()
+        rate_limit = RuntimeError("rate limited")
+        rate_limit.status_code = 429
+        expected = object()
+        client.chat.completions.create.side_effect = [rate_limit, expected]
+
+        result = main._create_groq_completion(client, "llama-3.3-70b-versatile", messages=[])
+
+        self.assertIs(result, expected)
+        calls = client.chat.completions.create.call_args_list
+        self.assertEqual(calls[0].kwargs["model"], "llama-3.3-70b-versatile")
+        self.assertEqual(calls[1].kwargs["model"], "llama-3.1-8b-instant")
 
     def test_chat_json_route_returns_text_without_starting_browser(self):
         with patch.object(
@@ -420,7 +436,9 @@ class LiveStreamTests(unittest.TestCase):
         self.assertFalse(main._requires_browser("ویکی‌پدیا چیست؟"))
 
     def test_persian_chat_stream_skips_browser_planner(self):
-        with patch.object(main, "_generate_chat_sync", return_value="خوبم، ممنون!") as chat_reply, patch.object(
+        def emit_reply(task, api_key, model, on_delta):
+            on_delta("خوبم، ممنون!")
+        with patch.object(main, "_generate_chat_stream_sync", side_effect=emit_reply) as chat_reply, patch.object(
             main, "_generate_plan_sync"
         ) as planner, patch.object(main, "_execute_plan", new=AsyncMock()) as browser_execute:
             response = self.client.post("/execute/stream", json={"task": "سلام، حالت چطوره؟"})
