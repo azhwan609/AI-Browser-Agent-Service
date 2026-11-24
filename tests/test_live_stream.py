@@ -389,19 +389,23 @@ class LiveStreamTests(unittest.TestCase):
         planner.assert_not_called()
         browser_execute.assert_not_awaited()
 
-    def test_groq_completion_falls_back_on_http_429(self):
-        client = MagicMock()
-        rate_limit = RuntimeError("rate limited")
-        rate_limit.status_code = 429
-        expected = object()
-        client.chat.completions.create.side_effect = [rate_limit, expected]
+    def test_groq_completion_falls_back_on_http_429_and_unavailable_model(self):
+        for status_code in (429, 404):
+            with self.subTest(status_code=status_code):
+                client = MagicMock()
+                error = RuntimeError("provider rejected primary model")
+                error.status_code = status_code
+                if status_code == 404:
+                    error.body = {"error": {"code": "model_not_found"}}
+                expected = object()
+                client.chat.completions.create.side_effect = [error, expected]
 
-        result = main._create_groq_completion(client, "llama-3.3-70b-versatile", messages=[])
+                result = main._create_groq_completion(client, "llama-3.3-70b-versatile", messages=[])
 
-        self.assertIs(result, expected)
-        calls = client.chat.completions.create.call_args_list
-        self.assertEqual(calls[0].kwargs["model"], "llama-3.3-70b-versatile")
-        self.assertEqual(calls[1].kwargs["model"], "llama-3.1-8b-instant")
+                self.assertIs(result, expected)
+                calls = client.chat.completions.create.call_args_list
+                self.assertEqual(calls[0].kwargs["model"], "llama-3.3-70b-versatile")
+                self.assertEqual(calls[1].kwargs["model"], "llama-3.1-8b-instant")
 
     def test_chat_json_route_returns_text_without_starting_browser(self):
         with patch.object(

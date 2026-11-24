@@ -637,14 +637,26 @@ def _is_json_schema_validation_error(error: Exception) -> bool:
     return "json_validate_failed" in message or "failed to validate json" in message
 
 
+def _should_use_groq_fallback(error: Exception, model: str) -> bool:
+    """Fallback on rate limits and unavailable/unauthorized model IDs."""
+    status_code = getattr(error, "status_code", None)
+    body = getattr(error, "body", None)
+    details = body.get("error") if isinstance(body, dict) else None
+    error_code = details.get("code") if isinstance(details, dict) else None
+    return model != FALLBACK_GROQ_MODEL and (
+        status_code == 429 or (status_code == 404 and error_code in {None, "model_not_found"})
+    )
+
+
 def _create_groq_completion(client, model: str, **kwargs):
-    """Retry with the fast fallback only when the primary model is rate-limited."""
+    """Retry with the fast model on primary-model rate limiting or unavailability."""
     try:
         return client.chat.completions.create(model=model, **kwargs)
     except Exception as exc:
-        if getattr(exc, "status_code", None) != 429 or model == FALLBACK_GROQ_MODEL:
+        if not _should_use_groq_fallback(exc, model):
             raise
-        logger.warning("Groq model %s was rate-limited; retrying with %s", model, FALLBACK_GROQ_MODEL)
+        logger.warning("Groq model %s is unavailable (%s); retrying with %s", model,
+                       getattr(exc, "status_code", "unknown"), FALLBACK_GROQ_MODEL)
         return client.chat.completions.create(model=FALLBACK_GROQ_MODEL, **kwargs)
 
 
@@ -740,9 +752,10 @@ def _generate_chat_stream_sync(task: str, api_key: str, model: str, on_delta) ->
         try:
             stream = create(model)
         except Exception as exc:
-            if getattr(exc, "status_code", None) != 429 or model == FALLBACK_GROQ_MODEL:
+            if not _should_use_groq_fallback(exc, model):
                 raise
-            logger.warning("Groq model %s was rate-limited; retrying stream with %s", model, FALLBACK_GROQ_MODEL)
+            logger.warning("Groq model %s is unavailable (%s); retrying stream with %s",
+                           model, getattr(exc, "status_code", "unknown"), FALLBACK_GROQ_MODEL)
             stream = create(FALLBACK_GROQ_MODEL)
         emitted = False
         for chunk in stream:
