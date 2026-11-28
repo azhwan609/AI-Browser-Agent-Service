@@ -111,9 +111,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("value: llama-3.3-70b-versatile", self.render_config)
         self.assertIn("- key: GROQ_API_KEY\n        sync: false", self.render_config)
 
-    def test_unsupported_attachments_are_rejected_without_clearing_state(self):
-        self.assertIn("supportsAttachments:false", self.html)
-        self.assertIn("payload.files.length&&adapter&&adapter.supportsAttachments===false", self.html)
+    def test_attachments_are_forwarded_as_bounded_context(self):
+        self.assertIn("supportsAttachments:true", self.html)
+        self.assertIn("Attachment:", self.html)
+        self.assertIn("slice(0,12000)", self.html)
 
     def test_playwright_image_and_python_package_versions_match(self):
         image = re.search(r"(?m)^FROM mcr\.microsoft\.com/playwright/python:v([\d.]+)-noble$", self.dockerfile)

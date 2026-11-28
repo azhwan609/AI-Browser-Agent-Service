@@ -1145,10 +1145,22 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     });
   }
   window.ShiwaUI.connect({
-    supportsAttachments:false,
+    supportsAttachments:true,
     async send(payload,ctx){
-      if(payload.files&&payload.files.length)throw new Error('File attachments are not supported by this backend yet.');
-      const task=(payload.text||'').trim();if(!task)return 'Please enter a task for the agent.';
+      let task=(payload.text||'').trim();
+      if(payload.files&&payload.files.length){
+        const attachmentParts=[];
+        for(const file of payload.files.slice(0,6)){
+          const meta='[Attachment: '+(file.name||'unnamed')+' | '+(file.type||'unknown type')+' | '+Math.ceil((file.size||0)/1024)+' KB]';
+          let excerpt='';
+          if((file.type||'').startsWith('text/')||/\.(txt|md|csv|json|log|py|js|ts|html|css)$/i.test(file.name||'')){
+            try{excerpt=(await file.text()).slice(0,12000)}catch(_){excerpt='[Text preview unavailable]'}
+          }
+          attachmentParts.push(meta+(excerpt?'\n'+excerpt:''));
+        }
+        task=(task?task+'\n\n':'')+attachmentParts.join('\n\n');
+      }
+      if(!task)return 'Please enter a task for the agent.';
       const loginIntent=/\b(?:log\s*(?:in|into)|login|sign\s*(?:in|into)|sign-in|authenticate)\b|(?:وارد\s*شو|وارد\s*حساب|لاگین|ورود\s*به\s*حساب)/i.test(task);
       let loginChoice=null,credentials=null;
       if(loginIntent){loginChoice=await requestLoginCredentials(task);if(!loginChoice)return 'Login canceled. Your credentials were not sent.';if(loginChoice.mode==='prefill')credentials={username:loginChoice.username,password:loginChoice.password};}
@@ -1161,7 +1173,20 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
         const endpoint=new URL('/execute/stream',window.location.href);
         let response;
         try{
-          const requestBody={task,manual_login:manualLogin};
+          const selectedModes = [
+            payload.mode && payload.mode.webSearch ? 'web search' : '',
+            payload.mode && payload.mode.sheetsBulk ? 'bulk sheets' : '',
+            payload.mode && payload.mode.private ? 'private mode' : ''
+          ].filter(Boolean);
+          const uiContext = [
+            selectedModes.length ? 'Modes: '+selectedModes.join(', ') : '',
+            payload.agent ? 'Agent: '+payload.agent : '',
+            payload.tool ? 'Tool: '+payload.tool : '',
+            payload.durationMin ? 'Duration: '+payload.durationMin+' minutes' : '',
+            payload.device ? 'Device: '+payload.device : ''
+          ].filter(Boolean).join(' | ');
+          const requestTask = (uiContext ? task+'\n\n[Interface context: '+uiContext+']' : task).slice(0,2000);
+          const requestBody={task:requestTask,manual_login:manualLogin};
           if(credentials){requestBody.login_username=credentials.username;requestBody.login_password=credentials.password;}
           response=await fetch(endpoint.href,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify(requestBody)});
         }catch(error){
@@ -1181,6 +1206,49 @@ BUTTON MAP (data-action): sheets | web | upload | media | library | duration | d
     }
   });
 })();</script>
+<script id="session-tools-enhancement">
+(function(){
+  const activity=[];
+  let activeDrawer=null;
+  const css=document.createElement('style');
+  css.textContent=`
+    .session-drawer{position:fixed;z-index:11000;right:16px;top:72px;width:min(360px,calc(100vw - 28px));max-height:min(470px,calc(100vh - 100px));overflow:auto;padding:14px;border:1px solid rgba(224,230,235,.76);border-radius:12px;background:linear-gradient(180deg,rgba(28,31,34,.98),rgba(8,10,12,.98));color:#f2f4f6;box-shadow:0 18px 60px rgba(0,0,0,.55),0 0 0 1px rgba(0,0,0,.65);font:12px/1.45 system-ui,sans-serif}
+    .session-drawer[hidden]{display:none}.session-drawer-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;text-transform:uppercase;letter-spacing:.12em;font-size:10px;color:#d7dde2}.session-drawer-close{border:1px solid #59636c;border-radius:6px;background:#171b1f;color:#fff;cursor:pointer;padding:3px 8px}.session-drawer-empty{color:#9ea8b0;padding:18px 4px}.session-entry,.library-entry{padding:9px 0;border-top:1px solid rgba(255,255,255,.12)}.session-entry:first-child,.library-entry:first-child{border-top:0}.session-entry strong{display:block;color:#fff;font-size:11px}.session-entry small,.library-entry small{display:block;color:#aeb7bf;margin-top:3px}.session-drawer-note{margin:0 0 10px;color:#aeb7bf;font-size:11px}
+  `;
+  document.head.appendChild(css);
+  const drawer=document.createElement('aside'); drawer.className='session-drawer'; drawer.hidden=true; drawer.setAttribute('aria-live','polite'); document.body.appendChild(drawer);
+  function close(){drawer.hidden=true;activeDrawer=null}
+  function open(kind){
+    activeDrawer=kind; drawer.hidden=false;
+    const title=kind==='activity'?'Activity':'Library';
+    let body='';
+    if(kind==='activity'){
+      body=activity.length?activity.slice().reverse().map(item=>'<div class="session-entry"><strong>'+escapeHtml(item.text||'Attachment task')+'</strong><small>'+escapeHtml(item.context)+' · '+escapeHtml(item.time)+'</small></div>').join(''):'<div class="session-drawer-empty">No requests in this session yet.</div>';
+    }else{
+      const files=(window.ShiwaUI&&window.ShiwaUI.state&&window.ShiwaUI.state.files)||[];
+      body='<p class="session-drawer-note">Selected files stay in this page until you send or remove them. They are not persisted.</p>';
+      body+=files.length?files.map(file=>'<div class="library-entry"><strong>'+escapeHtml(file.name||'Unnamed file')+'</strong><small>'+escapeHtml(file.type||'Unknown type')+' · '+Math.ceil((file.size||0)/1024)+' KB</small></div>').join(''):'<div class="session-drawer-empty">No files selected. Use Upload or Media to add one.</div>';
+    }
+    drawer.innerHTML='<div class="session-drawer-head"><span>'+title+'</span><button class="session-drawer-close" type="button" aria-label="Close '+title+'">Close</button></div>'+body;
+    drawer.querySelector('.session-drawer-close').addEventListener('click',close);
+  }
+  function escapeHtml(value){return String(value).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]})}
+  if(window.ShiwaUI&&window.ShiwaUI.on){
+    window.ShiwaUI.on('send',function(payload){
+      const modes=[]; if(payload.mode&&payload.mode.webSearch)modes.push('web'); if(payload.mode&&payload.mode.sheetsBulk)modes.push('sheets'); if(payload.mode&&payload.mode.private)modes.push('private');
+      activity.push({text:payload.text,context:(payload.agent||'run-agent')+(modes.length?' · '+modes.join(', '):''),time:new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),files:(payload.files||[]).length});
+    });
+  }
+  document.addEventListener('click',function(event){
+    const command=event.target.closest('[data-app-command]');
+    if(command&&command.dataset.appCommand==='activity'){event.preventDefault();open('activity');return}
+    const library=event.target.closest('[data-action="library"]');
+    if(library){window.setTimeout(function(){open('library')},0)}
+    if(activeDrawer&&!event.target.closest('.session-drawer')&&!event.target.closest('[data-app-command]')&&!event.target.closest('[data-action="library"]'))close();
+  },true);
+  document.addEventListener('keydown',function(event){if(event.key==='Escape')close()});
+})();
+</script>
 <script id="profile-preview-router">
 (function(){
   const page=document.getElementById('profile-page');
